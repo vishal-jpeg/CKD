@@ -1,1 +1,33 @@
+# Import the necessary module
+Import-Module Microsoft.Graph.Identity.SignIns
 
+# Connect to Microsoft Graph (if not already connected)
+if (-not (Get-MgContext)) { Connect-MgGraph -Scopes "RoleManagement.ReadWrite.Directory" }
+
+# Retrieve the Role Management Policy ID
+$policy = Get-MgPolicyRoleManagementPolicy | Where-Object { $_.DisplayName -eq "YourPolicyName" }
+if (-not $policy) { Write-Host "Error: Policy not found!" ; exit 1 }
+
+# Retrieve the Policy Rule ID
+$policyRule = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $policy.Id
+if (-not $policyRule) { Write-Host "Error: Policy Rule not found!" ; exit 1 }
+
+# Define parameters for updating the policy rule
+$params = @{
+    "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
+    id = "Expiration_Admin_Eligibility"
+    isExpirationRequired = $true
+    maximumDuration = "P90D"
+    target = @{
+        "@odata.type" = "microsoft.graph.unifiedRoleManagementPolicyRuleTarget"
+        caller = "Admin"
+        operations = @("All")
+        level = "Eligibility"
+        inheritableSettings = @()
+        enforcedSettings = @()
+    }
+}
+
+# Update the policy rule
+Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $policy.Id -UnifiedRoleManagementPolicyRuleId $policyRule.Id -BodyParameter $params
+Write-Host "✅ Policy Rule Updated Successfully!"
