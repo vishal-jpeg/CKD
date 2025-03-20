@@ -1,33 +1,53 @@
-# Import the necessary module
 Import-Module Microsoft.Graph.Identity.SignIns
 
-# Connect to Microsoft Graph (if not already connected)
-if (-not (Get-MgContext)) { Connect-MgGraph -Scopes "RoleManagement.ReadWrite.Directory" }
+# Replace with your subscription ID
+$subscriptionId = "YOUR_SUBSCRIPTION_ID"
+$scope = "/subscriptions/$subscriptionId"
 
-# Retrieve the Role Management Policy ID
-$policy = Get-MgPolicyRoleManagementPolicy | Where-Object { $_.DisplayName -eq "YourPolicyName" }
-if (-not $policy) { Write-Host "Error: Policy not found!" ; exit 1 }
+try {
+    # Get the policy ID for the specific subscription
+    $policy = Get-MgPolicyRoleManagementPolicy | Where-Object { $_.ScopeId -eq $scope }
 
-# Retrieve the Policy Rule ID
-$policyRule = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $policy.Id
-if (-not $policyRule) { Write-Host "Error: Policy Rule not found!" ; exit 1 }
+    if ($policy) {
+        $unifiedRoleManagementPolicyId = $policy.Id
 
-# Define parameters for updating the policy rule
-$params = @{
-    "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
-    id = "Expiration_Admin_Eligibility"
-    isExpirationRequired = $true
-    maximumDuration = "P90D"
-    target = @{
-        "@odata.type" = "microsoft.graph.unifiedRoleManagementPolicyRuleTarget"
-        caller = "Admin"
-        operations = @("All")
-        level = "Eligibility"
-        inheritableSettings = @()
-        enforcedSettings = @()
+        # Get the rule for the Reader role
+        $rule = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $unifiedRoleManagementPolicyId | Where-Object { $_.Target.Caller -eq "acdd72a7-3385-48ef-bd42-f606fba81ae7" -and $_.Target.Level -eq "Eligibility" }
+
+        if ($rule) {
+            $unifiedRoleManagementPolicyRuleId = $rule.Id
+
+            # Now, update the rule (as in the previous response)
+            $params = @{
+                "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
+                id = $unifiedRoleManagementPolicyRuleId
+                isExpirationRequired = $false
+                target = @{
+                    "@odata.type" = "microsoft.graph.unifiedRoleManagementPolicyRuleTarget"
+                    caller = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
+                    operations = @(
+                        "All"
+                    )
+                    level = "Eligibility"
+                    inheritableSettings = @(
+                    )
+                    enforcedSettings = @(
+                    )
+                }
+            }
+
+            Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $unifiedRoleManagementPolicyId -UnifiedRoleManagementPolicyRuleId $unifiedRoleManagementPolicyRuleId -BodyParameter $params
+
+            Write-Host "Expiration for Reader role eligibility in subscription '$subscriptionId' successfully updated."
+        } else {
+            Write-Host "Rule for Reader role eligibility not found in subscription '$subscriptionId'."
+        }
+    } else {
+        Write-Host "Policy for subscription '$subscriptionId' not found."
     }
 }
+catch {
+    Write-Host "Error updating expiration:"
+    Write-Host $_.Exception.Message
+}
 
-# Update the policy rule
-Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $policy.Id -UnifiedRoleManagementPolicyRuleId $policyRule.Id -BodyParameter $params
-Write-Host "✅ Policy Rule Updated Successfully!"
