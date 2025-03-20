@@ -1,38 +1,34 @@
 # 1️⃣ Connect to Microsoft Graph with required permissions
 Connect-MgGraph -Scopes "RoleManagement.ReadWrite.Directory", "RoleManagementPolicy.ReadWrite.AzureAD"
 
-# 2️⃣ Get the Subscription Scope ID for Sandbox
-$subscriptionId = "<YOUR_SANDBOX_SUBSCRIPTION_ID>"
-$scope = "/subscriptions/$subscriptionId"
+# 2️⃣ Get the Policy Assignment for the Reader role in the Sandbox subscription
+$PolicyAssignment = Get-MgPolicyRoleManagementPolicyAssignment -Filter "scopeId eq '/subscriptions/<YOUR_SANDBOX_SUBSCRIPTION_ID>' and scopeType eq 'Subscription' and RoleDefinitionId eq 'acdd72a7-3385-48ef-bd42-f606fba81ae7'"  # Reader Role ID
 
-# 3️⃣ Find the Role Management Policy for the 'Reader' role
-$policy = Get-MgPolicyRoleManagementPolicy | Where-Object { $_.ScopeId -eq $scope -and $_.DisplayName -like "*Reader*" }
-
-if (-not $policy) { 
-    Write-Host "❌ Error: No Role Management Policy found for Reader in the Sandbox subscription!" 
+if (-not $PolicyAssignment) { 
+    Write-Host "❌ Error: Policy Assignment not found for Reader role in Sandbox subscription!" 
     exit 1
 }
 
-Write-Host "✅ Found Policy: $($policy.DisplayName) with ID: $($policy.Id)"
+Write-Host "✅ Found Policy Assignment with ID: $($PolicyAssignment.PolicyId)"
 
-# 4️⃣ Retrieve the expiration policy rule for the Reader role
-$policyRule = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $policy.Id | Where-Object { $_.Id -like "*Expiration*" }
+# 3️⃣ Retrieve the policy rule for expiration settings
+$Policy = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId | Where-Object { $_.Id -like "*Expiration*" }
 
-if (-not $policyRule) { 
-    Write-Host "❌ Error: No expiration policy rule found for Reader!" 
+if (-not $Policy) { 
+    Write-Host "❌ Error: Expiration Policy Rule not found for Reader role!" 
     exit 1
 }
 
-Write-Host "✅ Found Expiration Rule: $($policyRule.Id)"
+Write-Host "✅ Found Expiration Policy Rule: $($Policy.Id)"
 
-# 5️⃣ Update the policy to make the role eligibility permanent (disable expiration)
+# 4️⃣ Update the policy rule to disable expiration
 $params = @{
     "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
-    id = $policyRule.Id
-    isExpirationRequired = $false   # Set to false (No Expiration)
-    maximumDuration = "P0D"         # No duration limit
+    id = $Policy.Id
+    isExpirationRequired = $false   # No expiration
+    maximumDuration = "P0D"         # Permanent eligibility
 }
 
-Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $policy.Id -UnifiedRoleManagementPolicyRuleId $policyRule.Id -BodyParameter $params
+Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId -UnifiedRoleManagementPolicyRuleId $Policy.Id -BodyParameter $params
 
-Write-Host "✅ Reader Role in Sandbox Subscription is now set to PERMANENT eligibility!"
+Write-Host "✅ Reader Role in Sandbox Subscription now has PERMANENT eligibility!"
