@@ -1,27 +1,41 @@
-# 1️⃣ Connect to Microsoft Graph with required permissions
-Connect-MgGraph -Scopes "RoleManagement.ReadWrite.Directory", "RoleManagementPolicy.ReadWrite.AzureAD"
+# 1️⃣ Define Authentication Variables
+$tenantId = "<YOUR_TENANT_ID>"
+$clientId = "<YOUR_SERVICE_PRINCIPAL_APP_ID>"
+$clientSecret = "<YOUR_CLIENT_SECRET>"
 
-# 2️⃣ Get the Policy Assignment for the Reader role in the Sandbox subscription
-$PolicyAssignment = Get-MgPolicyRoleManagementPolicyAssignment -Filter "scopeId eq '/subscriptions/<YOUR_SANDBOX_SUBSCRIPTION_ID>' and scopeType eq 'Subscription' and RoleDefinitionId eq 'acdd72a7-3385-48ef-bd42-f606fba81ae7'"  # Reader Role ID
+# Convert Client Secret to SecureString
+$secureSecret = ConvertTo-SecureString $clientSecret -AsPlainText -Force
+$creds = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $clientId, $secureSecret
+
+# 2️⃣ Connect to Microsoft Graph using Service Principal (No Login Prompt)
+Connect-MgGraph -TenantId $tenantId -ClientId $clientId -ClientSecret $secureSecret
+
+Write-Host "✅ Connected to Microsoft Graph"
+
+# 3️⃣ Get the Policy Assignment for the Reader role in the Sandbox subscription
+$subscriptionId = "<YOUR_SANDBOX_SUBSCRIPTION_ID>"
+$readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7"  # Reader Role ID
+
+$PolicyAssignment = Get-MgPolicyRoleManagementPolicyAssignment -Filter "scopeId eq '/subscriptions/$subscriptionId' and scopeType eq 'Subscription' and RoleDefinitionId eq '$readerRoleId'"
 
 if (-not $PolicyAssignment) { 
-    Write-Host "❌ Error: Policy Assignment not found for Reader role in Sandbox subscription!" 
+    Write-Host "❌ Error: Policy Assignment not found for Reader role in Sandbox subscription!"
     exit 1
 }
 
 Write-Host "✅ Found Policy Assignment with ID: $($PolicyAssignment.PolicyId)"
 
-# 3️⃣ Retrieve the policy rule for expiration settings
+# 4️⃣ Retrieve the policy rule for expiration settings
 $Policy = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId | Where-Object { $_.Id -like "*Expiration*" }
 
 if (-not $Policy) { 
-    Write-Host "❌ Error: Expiration Policy Rule not found for Reader role!" 
+    Write-Host "❌ Error: Expiration Policy Rule not found for Reader role!"
     exit 1
 }
 
 Write-Host "✅ Found Expiration Policy Rule: $($Policy.Id)"
 
-# 4️⃣ Update the policy rule to disable expiration
+# 5️⃣ Update the policy rule to disable expiration
 $params = @{
     "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
     id = $Policy.Id
