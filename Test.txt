@@ -1,34 +1,37 @@
-# 1️⃣ Connect to Microsoft Graph with required permissions
-Connect-MgGraph -Scopes "RoleManagement.ReadWrite.Directory", "RoleManagementPolicy.ReadWrite.AzureAD"
+# Install Microsoft Graph module (if not already installed)
+Install-Module Microsoft.Graph -Scope CurrentUser -Force
 
-# 2️⃣ Get the Policy Assignment for the Reader role in the Sandbox subscription
-$PolicyAssignment = Get-MgPolicyRoleManagementPolicyAssignment -Filter "scopeId eq '/subscriptions/<YOUR_SANDBOX_SUBSCRIPTION_ID>' and scopeType eq 'Subscription' and RoleDefinitionId eq 'acdd72a7-3385-48ef-bd42-f606fba81ae7'"  # Reader Role ID
+# Connect to Microsoft Graph with required permissions
+Connect-MgGraph -Scopes "PrivilegedAccess.ReadWrite.AzureResources"
 
-if (-not $PolicyAssignment) { 
-    Write-Host "❌ Error: Policy Assignment not found for Reader role in Sandbox subscription!" 
-    exit 1
-}
+# Define variables (Replace subscription ID if needed)
+$subscriptionId = "e1732281-2c8e-478d-9669-196e46ab1875"  # From your first image
+$readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7"   # Built-in Reader role GUID
 
-Write-Host "✅ Found Policy Assignment with ID: $($PolicyAssignment.PolicyId)"
+# Retrieve the PIM policy for Reader role
+$policies = Get-MgPolicyRoleManagementPolicy -ProviderId "azureResources" -Scope "subscriptions/$subscriptionId"
+$readerPolicy = $policies | Where-Object { $_.RoleDefinitionId -eq $readerRoleId }
 
-# 3️⃣ Retrieve the policy rule for expiration settings
-$Policy = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId | Where-Object { $_.Id -like "*Expiration*" }
+# Get expiration rules for eligible assignments
+$rules = Get-MgPolicyRoleManagementPolicyRule -PolicyId $readerPolicy.Id -ProviderId "azureResources" -Scope "subscriptions/$subscriptionId"
+$expirationRule = $rules | Where-Object { $_.RuleType -eq "Expiration_Admin_Eligibility" }
 
-if (-not $Policy) { 
-    Write-Host "❌ Error: Expiration Policy Rule not found for Reader role!" 
-    exit 1
-}
-
-Write-Host "✅ Found Expiration Policy Rule: $($Policy.Id)"
-
-# 4️⃣ Update the policy rule to disable expiration
+# Update the rule to allow permanent eligible assignments
 $params = @{
     "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
-    id = $Policy.Id
-    isExpirationRequired = $false   # No expiration
-    maximumDuration = "P0D"         # Permanent eligibility
+    id = $expirationRule.Id
+    isExpirationRequired = $false
+    maximumDuration = $null
 }
 
-Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId -UnifiedRoleManagementPolicyRuleId $Policy.Id -BodyParameter $params
+Update-MgPolicyRoleManagementPolicyRule `
+    -ProviderId "azureResources" `
+    -Scope "subscriptions/$subscriptionId" `
+    -RoleManagementPolicyId $readerPolicy.Id `
+    -UnifiedRoleManagementPolicyRuleId $expirationRule.Id `
+    -BodyParameter $params
 
-Write-Host "✅ Reader Role in Sandbox Subscription now has PERMANENT eligibility!"
+Write-Host "Successfully updated PIM settings for Reader role." -ForegroundColor Green
+
+# Optional: Disconnect session
+# Disconnect-MgGraph
