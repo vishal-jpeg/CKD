@@ -46,3 +46,104 @@ $params = @{
 Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId -UnifiedRoleManagementPolicyRuleId $Policy.Id -BodyParameter $params
 
 Write-Host "✅ Reader Role in Sandbox Subscription now has PERMANENT eligibility!"
+,...........
+
+Below is an example of how you can modify your Azure Pipelines YAML to leverage an existing service connection (which has the proper application permissions) so that you avoid hard‐coding client secrets or using federated credentials in your script. In this example, we use the Azure CLI task to get an access token from the service connection context and then pass that token to the Microsoft Graph PowerShell module.
+
+> Note:
+Your service connection (for example, named "MyServiceConnection") must already be configured in Azure DevOps with the proper Azure AD app permissions. The task uses that connection to retrieve an access token without requiring you to explicitly supply secrets.
+
+
+
+
+---
+
+Example Pipeline YAML
+
+trigger:
+- main
+
+pool:
+  vmImage: 'windows-latest'
+
+steps:
+- task: AzureCLI@2
+  displayName: 'Run Microsoft Graph Script using Service Connection'
+  inputs:
+    azureSubscription: 'MyServiceConnection'  # Replace with your service connection name
+    scriptType: 'ps'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      # Install and import the Microsoft Graph PowerShell module if not already installed
+      if (-not (Get-Module -ListAvailable -Name Microsoft.Graph)) {
+          Install-Module -Name Microsoft.Graph -AllowClobber -Force -ErrorAction SilentlyContinue
+      }
+      Import-Module Microsoft.Graph
+
+      # Retrieve an access token using the service connection context.
+      # The "az account get-access-token" command uses the service connection’s identity.
+      $accessToken = az account get-access-token --query accessToken -o tsv
+      if (-not $accessToken) {
+          Write-Host "❌ Error: Unable to retrieve an access token from the service connection."
+          exit 1
+      }
+      Write-Host "✅ Access token retrieved."
+
+      # Connect to Microsoft Graph using the access token.
+      Connect-MgGraph -AccessToken $accessToken
+      Write-Host "✅ Connected to Microsoft Graph using the service connection token."
+
+      # Now continue with your Microsoft Graph operations.
+      # For example, retrieving the Policy Assignment for the Reader role in your Sandbox subscription.
+      $subscriptionId = "<YOUR_SANDBOX_SUBSCRIPTION_ID>"  # Replace with your subscription ID
+      $readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7"   # Reader Role Definition ID
+
+      $PolicyAssignment = Get-MgPolicyRoleManagementPolicyAssignment -Filter "scopeId eq '/subscriptions/$subscriptionId' and scopeType eq 'Subscription' and RoleDefinitionId eq '$readerRoleId'"
+      if (-not $PolicyAssignment) { 
+          Write-Host "❌ Error: Policy Assignment not found for Reader role in Sandbox subscription!"
+          exit 1
+      }
+      Write-Host "✅ Found Policy Assignment with ID: $($PolicyAssignment.PolicyId)"
+
+      # Retrieve the policy rule for expiration settings.
+      $Policy = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId | Where-Object { $_.Id -like "*Expiration*" }
+      if (-not $Policy) { 
+          Write-Host "❌ Error: Expiration Policy Rule not found for Reader role!"
+          exit 1
+      }
+      Write-Host "✅ Found Expiration Policy Rule: $($Policy.Id)"
+
+      # Update the policy rule to disable expiration (permanent eligibility).
+      $params = @{
+          "@odata.type"        = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
+          id                   = $Policy.Id
+          isExpirationRequired = $false  # No expiration
+          maximumDuration      = "P0D"   # Permanent eligibility
+      }
+      Update-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $PolicyAssignment.PolicyId -UnifiedRoleManagementPolicyRuleId $Policy.Id -BodyParameter $params
+      Write-Host "✅ Reader Role in Sandbox Subscription now has PERMANENT eligibility!"
+
+
+---
+
+Explanation
+
+1. Azure CLI Task with Service Connection:
+The AzureCLI@2 task uses your service connection ("MyServiceConnection") to authenticate with Azure. This avoids embedding any secrets in the YAML.
+
+
+2. Retrieving an Access Token:
+The script uses az account get-access-token to retrieve an access token. This token is automatically obtained using the service connection’s identity and includes the proper application permissions (AP).
+
+
+3. Connecting to Microsoft Graph:
+The token is passed to Connect-MgGraph -AccessToken $accessToken, which authenticates your session with Microsoft Graph without requiring client secrets or interactive login.
+
+
+4. Graph Operations:
+After connecting, the script runs your Microsoft Graph commands (e.g., retrieving policy assignments and updating expiration settings).
+
+
+
+This setup leverages the service connection’s built-in authentication and avoids additional authentication steps in your script. Let me know if you have further questions or need additional adjustments!
+
