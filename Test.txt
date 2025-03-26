@@ -1,22 +1,23 @@
-# Install Microsoft Graph module (if not already installed)
+# Install/Update Microsoft Graph module
 Install-Module Microsoft.Graph -Scope CurrentUser -Force
+Import-Module Microsoft.Graph
 
-# Connect to Microsoft Graph with required permissions
+# Connect to Microsoft Graph
 Connect-MgGraph -Scopes "PrivilegedAccess.ReadWrite.AzureResources"
 
-# Define variables (Replace subscription ID if needed)
-$subscriptionId = "e1732281-2c8e-478d-9669-196e46ab1875"  # From your first image
-$readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7"   # Built-in Reader role GUID
+# Define variables (use your subscription ID)
+$subscriptionId = "e1732281-2c8e-478d-9669-196e46ab1875"
+$readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7" # Reader role GUID
 
-# Retrieve the PIM policy for Reader role
-$policies = Get-MgPolicyRoleManagementPolicy -ProviderId "azureResources" -Scope "subscriptions/$subscriptionId"
+# Fetch PIM policies for the subscription
+$policies = Get-MgPolicyRoleManagementPolicy -Filter "scopeId eq '/subscriptions/$subscriptionId'"
 $readerPolicy = $policies | Where-Object { $_.RoleDefinitionId -eq $readerRoleId }
 
-# Get expiration rules for eligible assignments
-$rules = Get-MgPolicyRoleManagementPolicyRule -PolicyId $readerPolicy.Id -ProviderId "azureResources" -Scope "subscriptions/$subscriptionId"
+# Retrieve expiration rules
+$rules = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $readerPolicy.Id
 $expirationRule = $rules | Where-Object { $_.RuleType -eq "Expiration_Admin_Eligibility" }
 
-# Update the rule to allow permanent eligible assignments
+# Update the rule to allow permanent assignments
 $params = @{
     "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
     id = $expirationRule.Id
@@ -25,13 +26,8 @@ $params = @{
 }
 
 Update-MgPolicyRoleManagementPolicyRule `
-    -ProviderId "azureResources" `
-    -Scope "subscriptions/$subscriptionId" `
-    -RoleManagementPolicyId $readerPolicy.Id `
+    -UnifiedRoleManagementPolicyId $readerPolicy.Id `
     -UnifiedRoleManagementPolicyRuleId $expirationRule.Id `
     -BodyParameter $params
 
-Write-Host "Successfully updated PIM settings for Reader role." -ForegroundColor Green
-
-# Optional: Disconnect session
-# Disconnect-MgGraph
+Write-Host "PIM rule updated successfully!" -ForegroundColor Green
