@@ -1,33 +1,61 @@
-# Install/Update Microsoft Graph module
-Install-Module Microsoft.Graph -Scope CurrentUser -Force
-Import-Module Microsoft.Graph
+# Service principal credentials provided as environment variables.
+$tenantId    = $env:TenantId      # e.g. "your-tenant-id"
+$clientId    = $env:ClientId      # e.g. "your-client-id"
+$clientSecret= $env:ClientSecret  # e.g. "your-client-secret"
 
-# Connect to Microsoft Graph
-Connect-MgGraph -Scopes "PrivilegedAccess.ReadWrite.AzureResources"
+# Convert client secret to a secure string and create PSCredential.
+$secureClientSecret = ConvertTo-SecureString $clientSecret -AsPlainText -Force
+$spCredential = New-Object System.Management.Automation.PSCredential($clientId, $secureClientSecret)
 
-# Define variables (use your subscription ID)
-$subscriptionId = "e1732281-2c8e-478d-9669-196e46ab1875"
-$readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7" # Reader role GUID
+# Connect to Azure using the service principal.
+Connect-AzAccount -ServicePrincipal -Tenant $tenantId -Credential $spCredential
 
-# Fetch PIM policies for the subscription
-$policies = Get-MgPolicyRoleManagementPolicy -Filter "scopeId eq '/subscriptions/$subscriptionId'"
-$readerPolicy = $policies | Where-Object { $_.RoleDefinitionId -eq $readerRoleId }
+# Retrieve an access token for the Azure Management endpoint.
+$accessToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
 
-# Retrieve expiration rules
-$rules = Get-MgPolicyRoleManagementPolicyRule -UnifiedRoleManagementPolicyId $readerPolicy.Id
-$expirationRule = $rules | Where-Object { $_.RuleType -eq "Expiration_Admin_Eligibility" }
-
-# Update the rule to allow permanent assignments
-$params = @{
-    "@odata.type" = "#microsoft.graph.unifiedRoleManagementPolicyExpirationRule"
-    id = $expirationRule.Id
-    isExpirationRequired = $false
-    maximumDuration = $null
+# Build the headers to include the token.
+$headers = @{
+    "Authorization" = "Bearer $accessToken"
+    "Content-Type"  = "application/json"
 }
 
-Update-MgPolicyRoleManagementPolicyRule `
-    -UnifiedRoleManagementPolicyId $readerPolicy.Id `
-    -UnifiedRoleManagementPolicyRuleId $expirationRule.Id `
-    -BodyParameter $params
+# Define the scope. For example, to target a subscription use:
+$scope = "/subscriptions/<subscription-id>"  # Replace with your actual subscription ID or scope.
 
-Write-Host "PIM rule updated successfully!" -ForegroundColor Green
+# -------------------------------
+# GET: List Role Management Policies
+# -------------------------------
+# Set your filter as needed (for example, to filter on display name).
+$filter   = "YOUR_FILTER_HERE"  # Replace with your actual filter criteria
+$apiVersion = "2020-10-01"
+
+# Note: Escape the $ in $filter in the URI with a backtick (`$)
+$getUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$filter"
+
+# Send the GET request
+$getResponse = Invoke-RestMethod -Method GET -Uri $getUri -Headers $headers
+
+# Output the GET response (which should include the policy objects and their IDs)
+$getResponse
+
+# -------------------------------
+# PATCH: Update a Specific Role Management Policy
+# -------------------------------
+# Replace with the actual policy ID you wish to update, as returned in the GET response.
+$roleManagementPolicyId = "YOUR_POLICY_ID"  # For example, "policy-12345"
+$patchUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies/$roleManagementPolicyId?api-version=$apiVersion"
+
+# Build the JSON body with the updated properties.
+# Adjust the properties object as needed.
+$patchBody = @{
+    properties = @{
+        displayName = "Updated Policy Name"
+        # Add or update other properties as needed.
+    }
+} | ConvertTo-Json -Depth 10
+
+# Send the PATCH request
+$patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
+
+# Output the PATCH response
+$patchResponse
