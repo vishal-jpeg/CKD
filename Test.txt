@@ -1,66 +1,47 @@
-# Service principal credentials provided as environment variables.
-$tenantId    = $env:TenantId      # e.g. "your-tenant-id"
-$clientId    = $env:ClientId      # e.g. "your-client-id"
-$clientSecret= $env:ClientSecret  # e.g. "your-client-secret"
+trigger:
+- main
 
-# Convert client secret to a secure string and create PSCredential.
-$secureClientSecret = ConvertTo-SecureString $clientSecret -AsPlainText -Force
-$spCredential = New-Object System.Management.Automation.PSCredential($clientId, $secureClientSecret)
+pool:
+  vmImage: 'windows-latest'
 
-# Connect to Azure using the service principal.
-Connect-AzAccount -ServicePrincipal -Tenant $tenantId -Credential $spCredential
-
-# Retrieve an access token for the Azure Management endpoint.
-$accessToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
-
-# Build the headers to include the token.
-$headers = @{
-    "Authorization" = "Bearer $accessToken"
-    "Content-Type"  = "application/json"
-}
-
-# Define the scope. For example, to target a subscription use:
-$scope = "/subscriptions/<subscription-id>"  # Replace with your actual subscription ID or scope.
-
-# -------------------------------
-# GET: List Role Management Policies
-# -------------------------------
-# Set your filter as needed (for example, to filter on display name).
-$filter   = "YOUR_FILTER_HERE"  # Replace with your actual filter criteria
-$apiVersion = "2020-10-01"
-
-# Note: Escape the $ in $filter in the URI with a backtick (`$)
-$getUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$filter"
-
-# Send the GET request
-$getResponse = Invoke-RestMethod -Method GET -Uri $getUri -Headers $headers
-
-# Output the GET response (which should include the policy objects and their IDs)
-$getResponse
-
-# -------------------------------
-# PATCH: Update a Specific Role Management Policy
-# -------------------------------
-# Replace with the actual policy ID you wish to update, as returned in the GET response.
-$roleManagementPolicyId = "YOUR_POLICY_ID"  # For example, "policy-12345"
-$patchUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies/$roleManagementPolicyId?api-version=$apiVersion"
-
-# Build the JSON body with the updated properties.
-# ***** CHANGES MADE BELOW *****
-# Added the roleAssignmentRequestPolicy property with isExpirationRequired set to false,
-# which will remove the expiration rule (i.e. make the assignment permanent).
-$patchBody = @{
-    properties = @{
-        displayName = "Updated Policy Name"
-        roleAssignmentRequestPolicy = @{
-            isExpirationRequired = $false
+steps:
+  - task: AzurePowerShell@5
+    inputs:
+      azureSubscription: 'MyAzureServiceConnection'
+      ScriptType: 'InlineScript'
+      Inline: |
+        $accessToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com").Token
+        $headers = @{
+            "Authorization" = "Bearer $accessToken"
+            "Content-Type"  = "application/json"
         }
-    }
-} | ConvertTo-Json -Depth 10
-# ***** END OF CHANGES *****
+        $scope = "/subscriptions/$(SubscriptionId)"
+        $filter = "YOUR_FILTER_HERE"
+        $apiVersion = "2020-10-01"
+        Write-Host "Running GET request to list role management policies..."
+        $getUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$filter"
+        $getResponse = Invoke-RestMethod -Method GET -Uri $getUri -Headers $headers
+        Write-Host "GET response:"
+        $getResponse
 
-# Send the PATCH request
-$patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
+        # Replace with the actual policy ID from the GET response.
+        $roleManagementPolicyId = "YOUR_POLICY_ID"
+        Write-Host "Patching policy ID: $roleManagementPolicyId"
 
-# Output the PATCH response
-$patchResponse
+        $patchUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies/$roleManagementPolicyId?api-version=$apiVersion"
+
+        # ***** CHANGES MADE BELOW *****
+        # Added roleAssignmentRequestPolicy with isExpirationRequired set to false to make the expiration rule permanent.
+        $patchBody = @{
+            properties = @{
+                displayName = "Updated Policy Name"
+                roleAssignmentRequestPolicy = @{
+                    isExpirationRequired = $false
+                }
+            }
+        } | ConvertTo-Json -Depth 10
+        # ***** END OF CHANGES *****
+
+        $patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
+        Write-Host "PATCH response:"
+        $patchResponse
