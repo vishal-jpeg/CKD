@@ -1,64 +1,66 @@
-trigger:
-- main
+# Service principal credentials provided as environment variables.
+$tenantId    = $env:TenantId      # e.g. "your-tenant-id"
+$clientId    = $env:ClientId      # e.g. "your-client-id"
+$clientSecret= $env:ClientSecret  # e.g. "your-client-secret"
 
-pool:
-  vmImage: 'windows-latest'
+# Convert client secret to a secure string and create PSCredential.
+$secureClientSecret = ConvertTo-SecureString $clientSecret -AsPlainText -Force
+$spCredential = New-Object System.Management.Automation.PSCredential($clientId, $secureClientSecret)
 
-steps:
-  - task: AzurePowerShell@5
-    inputs:
-      # This is the name of your existing Azure RM service connection
-      azureSubscription: 'MyAzureServiceConnection'
+# Connect to Azure using the service principal.
+Connect-AzAccount -ServicePrincipal -Tenant $tenantId -Credential $spCredential
 
-      # We will run an inline script
-      ScriptType: 'InlineScript'
+# Retrieve an access token for the Azure Management endpoint.
+$accessToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
 
-      # Our script code goes here
-      Inline: |
-        # You should already be logged in via the Azure service connection,
-        # so you can retrieve the access token directly:
+# Build the headers to include the token.
+$headers = @{
+    "Authorization" = "Bearer $accessToken"
+    "Content-Type"  = "application/json"
+}
 
-        $accessToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com").Token
+# Define the scope. For example, to target a subscription use:
+$scope = "/subscriptions/<subscription-id>"  # Replace with your actual subscription ID or scope.
 
-        $headers = @{
-            "Authorization" = "Bearer $accessToken"
-            "Content-Type"  = "application/json"
+# -------------------------------
+# GET: List Role Management Policies
+# -------------------------------
+# Set your filter as needed (for example, to filter on display name).
+$filter   = "YOUR_FILTER_HERE"  # Replace with your actual filter criteria
+$apiVersion = "2020-10-01"
+
+# Note: Escape the $ in $filter in the URI with a backtick (`$)
+$getUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$filter"
+
+# Send the GET request
+$getResponse = Invoke-RestMethod -Method GET -Uri $getUri -Headers $headers
+
+# Output the GET response (which should include the policy objects and their IDs)
+$getResponse
+
+# -------------------------------
+# PATCH: Update a Specific Role Management Policy
+# -------------------------------
+# Replace with the actual policy ID you wish to update, as returned in the GET response.
+$roleManagementPolicyId = "YOUR_POLICY_ID"  # For example, "policy-12345"
+$patchUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies/$roleManagementPolicyId?api-version=$apiVersion"
+
+# Build the JSON body with the updated properties.
+# ***** CHANGES MADE BELOW *****
+# Added the roleAssignmentRequestPolicy property with isExpirationRequired set to false,
+# which will remove the expiration rule (i.e. make the assignment permanent).
+$patchBody = @{
+    properties = @{
+        displayName = "Updated Policy Name"
+        roleAssignmentRequestPolicy = @{
+            isExpirationRequired = $false
         }
+    }
+} | ConvertTo-Json -Depth 10
+# ***** END OF CHANGES *****
 
-        # Replace with your subscription or resource scope
-        $scope = "/subscriptions/$(SubscriptionId)"
+# Send the PATCH request
+$patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
 
-        # Optional filter if needed
-        $filter = "YOUR_FILTER_HERE"
-        $apiVersion = "2020-10-01"
-
-        Write-Host "Running GET request to list role management policies..."
-
-        $getUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies?api-version=$apiVersion&`$filter=$filter"
-        $getResponse = Invoke-RestMethod -Method GET -Uri $getUri -Headers $headers
-
-        Write-Host "GET response:"
-        $getResponse
-
-        # Example: pick a policy ID from the response
-        # (In reality, parse $getResponse to find the policy ID you want to update)
-        $roleManagementPolicyId = "YOUR_POLICY_ID"
-
-        Write-Host "Patching policy ID: $roleManagementPolicyId"
-
-        $patchUri = "https://management.azure.com$($scope)/providers/Microsoft.Authorization/roleManagementPolicies/$roleManagementPolicyId?api-version=$apiVersion"
-
-        # Build the JSON body with the updated properties
-        $patchBody = @{
-            properties = @{
-                displayName = "Updated Policy Name"
-                # Add or update other properties as needed
-            }
-        } | ConvertTo-Json -Depth 10
-
-        $patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
-        Write-Host "PATCH response:"
-        $patchResponse
-
-    # Use the latest installed version of Azure PowerShell
-    azurePowerShellVersion: 'LatestVersion'
+# Output the PATCH response
+$patchResponse
