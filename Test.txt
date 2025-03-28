@@ -1,71 +1,26 @@
-trigger:
-- main
+# ... (keep the initial part up to getting $policyId the same)
 
-pool:
-  vmImage: 'windows-latest'
+      # Get the FULL existing policy details (this was missing before)
+      $getPolicyUri = "https://management.azure.com/subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleManagementPolicies/$policyId?api-version=2020-10-01"
+      $fullPolicy = Invoke-RestMethod -Method GET -Uri $getPolicyUri -Headers $headers
 
-steps:
-- task: AzurePowerShell@5
-  inputs:
-    azureSubscription: 'MyAzureServiceConnection'
-    ScriptType: 'InlineScript'
-    Inline: |
-      # Get the sandbox subscription details.
-      # You can either hard-code the subscription name or use a pipeline variable (e.g., $(SubscriptionName)).
-      $subscription = Get-AzSubscription -SubscriptionName "Sandbox"
-      if (-not $subscription) {
-          Write-Error "Sandbox subscription not found."
-          exit 1
+      # Modify the expiration rule in the existing rules array
+      foreach ($rule in $fullPolicy.properties.rules) {
+          if ($rule.id -eq "Expiration_Admin_Assignment") {
+              $rule.isExpirationRequired = $false
+              $rule.maximumDuration = "P999D"  # Set to a large value
+              break
+          }
       }
-      Write-Host "Subscription Id: $($subscription.Id)"
-      
-      # Retrieve an access token for the management endpoint.
-      $accessToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
-      $headers = @{
-          "Authorization" = "Bearer $accessToken"
-          "Content-Type"  = "application/json"
-      }
-      
-      # Define the Reader role definition id (this is fixed for the built-in Reader role).
-      $readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
-      
-      # Build the GET URI to list role management policies for the Reader role.
-      # This uses the filter parameter to retrieve the policy for the specified role definition.
-      $getRolePolicyUri = "https://management.azure.com/subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleManagementPolicies?api-version=2020-10-01&`$filter=roleDefinitionId eq 'subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId'"
-      Write-Host "GET Role Policy URI: $getRolePolicyUri"
-      
-      # Execute the GET request.
-      $policyResponse = Invoke-RestMethod -Method GET -Uri $getRolePolicyUri -Headers $headers
-      
-      # Check if we found any policy.
-      if ($policyResponse.value.Count -eq 0) {
-          Write-Error "No role management policy found for the Reader role. Ensure the Reader role is PIM-enabled in your subscription."
-          exit 1
-      }
-      
-      # Assume the first policy in the list is the one to update.
-      $policy = $policyResponse.value[0]
-      $policyId = $policy.name
-      Write-Host "Found role management policy ID: $policyId"
-      
-      # Build the PATCH URI using the policy id.
-      $patchUri = "https://management.azure.com/subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleManagementPolicies/$policyId?api-version=2020-10-01"
-      Write-Host "PATCH URI: $patchUri"
-      
-      # Build the JSON payload to update the policy to have no expiration.
-      # Here we update the roleAssignmentRequestPolicy by setting isExpirationRequired to false.
+
+      # Build the CORRECTED JSON payload with all rules
       $patchBody = @{
           properties = @{
               displayName = "Permanent Reader Role Policy"
-              roleAssignmentRequestPolicy = @{
-                  isExpirationRequired = $false
-              }
+              rules = $fullPolicy.properties.rules  # Include modified rules
           }
       } | ConvertTo-Json -Depth 10
       Write-Host "PATCH Payload: $patchBody"
       
-      # Execute the PATCH request.
+      # Execute the PATCH request with full policy rules
       $patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
-      Write-Host "PATCH response:"
-      $patchResponse
-  azurePowerShellVersion: 'LatestVersion'
