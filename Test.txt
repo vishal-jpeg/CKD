@@ -10,52 +10,62 @@ steps:
     azureSubscription: 'MyAzureServiceConnection'
     ScriptType: 'InlineScript'
     Inline: |
-      # Define the Get-Headers function
-      Function Get-Headers {
-          Param (
-              [Parameter(Mandatory)]
-              [Array]$Context
-          )
-          $azProfile = [Microsoft.Azure.Commands.Common.Authentication.Abstractions.AzureRmProfileProvider]::Instance.Profile
-          $profileClient = New-Object -TypeName Microsoft.Azure.Commands.ResourceManager.Common.RMProfileClient -ArgumentList ($azProfile)
-          $token = $profileClient.AcquireAccessToken($Context.Subscription.TenantId)
-          $authHeader = @{
-              'Content-Type'  = 'application/json'
-              'Authorization' = 'Bearer ' + $token.AccessToken
-          }
-          return $authHeader
-      }
-
-      # Ensure you're authenticated. The AzurePowerShell task uses the service connection, so you should already be logged in.
-      $context = Get-AzContext
-      if (-not $context) {
-          Write-Error "No Azure context found. Ensure you're logged in."
-          exit 1
-      }
-
-      # Retrieve headers using the custom Get-Headers function.
-      $headers = Get-Headers -Context (Get-AzContext)
-
-      # Retrieve the current subscription.
-      # Replace "MySubscription" with your subscription name, or use Get-AzSubscription to pick the desired subscription.
-      $subscription = Get-AzSubscription -SubscriptionName "MySubscription"
+      # Get the sandbox subscription details.
+      # You can either hard-code the subscription name or use a pipeline variable (e.g., $(SubscriptionName)).
+      $subscription = Get-AzSubscription -SubscriptionName "Sandbox"
       if (-not $subscription) {
-          Write-Error "Subscription not found."
+          Write-Error "Sandbox subscription not found."
           exit 1
       }
       Write-Host "Subscription Id: $($subscription.Id)"
-
-      # Set the contributor role definition id.
-      # The GUID below is the built-in Contributor role id.
-      $contributorRoleId = "b24988ac-6180-42a0-ab88-20f7382dd24c"
-
-      # Build the GET request URI using the subscription id and contributor role id.
-      $getRolePolicyUri = "https://management.azure.com/providers/Microsoft.Subscription/subscriptions/{0}/providers/Microsoft.Authorization/roleManagementPolicies?api-version=2020-10-01&`$filter=roleDefinitionId%20eq%20'subscriptions/{0}/providers/Microsoft.Authorization/roleDefinitions/{1}'" -f $subscription.Id, $contributorRoleId
+      
+      # Retrieve an access token for the management endpoint.
+      $accessToken = (Get-AzAccessToken -ResourceUrl "https://management.azure.com/").Token
+      $headers = @{
+          "Authorization" = "Bearer $accessToken"
+          "Content-Type"  = "application/json"
+      }
+      
+      # Define the Reader role definition id (this is fixed for the built-in Reader role).
+      $readerRoleId = "acdd72a7-3385-48ef-bd42-f606fba81ae7"
+      
+      # Build the GET URI to list role management policies for the Reader role.
+      # This uses the filter parameter to retrieve the policy for the specified role definition.
+      $getRolePolicyUri = "https://management.azure.com/subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleManagementPolicies?api-version=2020-10-01&`$filter=roleDefinitionId eq 'subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleDefinitions/$readerRoleId'"
       Write-Host "GET Role Policy URI: $getRolePolicyUri"
-
-      # Get the role policy using the REST API.
-      $rolePolicy = (Invoke-RestMethod -Uri $getRolePolicyUri -Method Get -Headers $headers).value
-
-      Write-Host "Role Policy:"
-      $rolePolicy
+      
+      # Execute the GET request.
+      $policyResponse = Invoke-RestMethod -Method GET -Uri $getRolePolicyUri -Headers $headers
+      
+      # Check if we found any policy.
+      if ($policyResponse.value.Count -eq 0) {
+          Write-Error "No role management policy found for the Reader role. Ensure the Reader role is PIM-enabled in your subscription."
+          exit 1
+      }
+      
+      # Assume the first policy in the list is the one to update.
+      $policy = $policyResponse.value[0]
+      $policyId = $policy.name
+      Write-Host "Found role management policy ID: $policyId"
+      
+      # Build the PATCH URI using the policy id.
+      $patchUri = "https://management.azure.com/subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleManagementPolicies/$policyId?api-version=2020-10-01"
+      Write-Host "PATCH URI: $patchUri"
+      
+      # Build the JSON payload to update the policy to have no expiration.
+      # Here we update the roleAssignmentRequestPolicy by setting isExpirationRequired to false.
+      $patchBody = @{
+          properties = @{
+              displayName = "Permanent Reader Role Policy"
+              roleAssignmentRequestPolicy = @{
+                  isExpirationRequired = $false
+              }
+          }
+      } | ConvertTo-Json -Depth 10
+      Write-Host "PATCH Payload: $patchBody"
+      
+      # Execute the PATCH request.
+      $patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
+      Write-Host "PATCH response:"
+      $patchResponse
   azurePowerShellVersion: 'LatestVersion'
