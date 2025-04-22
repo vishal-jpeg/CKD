@@ -1,26 +1,27 @@
-# ... (keep the initial part up to getting $policyId the same)
+$csvRows = Import‑Csv 'eligibility‑requests.csv'
 
-      # Get the FULL existing policy details (this was missing before)
-      $getPolicyUri = "https://management.azure.com/subscriptions/$($subscription.Id)/providers/Microsoft.Authorization/roleManagementPolicies/$policyId?api-version=2020-10-01"
-      $fullPolicy = Invoke-RestMethod -Method GET -Uri $getPolicyUri -Headers $headers
+foreach ($row in $csvRows | Where RequestType -eq 'AdminAssign') {
+    # 1. Look for an existing schedule for this principal+role+scope
+    $existing = Get‑AzRoleEligibilityScheduleRequest `
+       -Filter "PrincipalId eq '$($row.PrincipalId)' and `
+               + "RoleDefinitionId eq '$($row.RoleDefinitionId)' and `
+               + "DirectoryScopeId eq '$($row.Scope)'" `
+       -ErrorAction SilentlyContinue
 
-      # Modify the expiration rule in the existing rules array
-      foreach ($rule in $fullPolicy.properties.rules) {
-          if ($rule.id -eq "Expiration_Admin_Assignment") {
-              $rule.isExpirationRequired = $false
-              $rule.maximumDuration = "P999D"  # Set to a large value
-              break
-          }
-      }
+    if ($existing) {
+        Write‑Verbose "Already exists, skipping: $($row.PrincipalId) @ $($row.Scope)"
+        continue   # ← skips into next CSV row
+    }
 
-      # Build the CORRECTED JSON payload with all rules
-      $patchBody = @{
-          properties = @{
-              displayName = "Permanent Reader Role Policy"
-              rules = $fullPolicy.properties.rules  # Include modified rules
-          }
-      } | ConvertTo-Json -Depth 10
-      Write-Host "PATCH Payload: $patchBody"
-      
-      # Execute the PATCH request with full policy rules
-      $patchResponse = Invoke-RestMethod -Method PATCH -Uri $patchUri -Headers $headers -Body $patchBody
+    # 2. Only new entries land here, so create them
+    New‑AzRoleEligibilityScheduleRequest `
+      -Name             ([Guid]::NewGuid().ToString()) `
+      -Scope            $row.Scope `
+      -PrincipalId      $row.PrincipalId `
+      -RoleDefinitionId $row.RoleDefinitionId `
+      -RequestType      AdminAssign `
+      -StartDateTime    $row.StartDateTime `
+      -Duration         $row.Duration `
+      -Justification    $row.Justification `
+      -ErrorAction      Stop
+}
