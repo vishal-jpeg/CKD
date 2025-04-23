@@ -1,156 +1,79 @@
-$csvPath = "/agent/_work/1/s/CTB/TemplateFiles/CSVS/PIM.csv"
-$entries = Import-Csv -Path $csvPath
+# ————————————————————————————————
+# CONFIGURATION
+# Path to your CSV (must have headers: Scope, principalName, roleName)
+$CsvPath = 'C:\path\to\assignments.csv'
+
+# Defaults for any missing columns (since CSV only has 3)
+# You can tweak these or prompt for them instead
+$DefaultDuration      = 'P1D'                         # ISO8601 duration (e.g. 'P1D' = 1 day)
+$DefaultJustification = 'Automated assignment script' 
+
+# ————————————————————————————————
+# IMPORT
+$entries = Import-Csv -Path $CsvPath
 
 foreach ($entry in $entries) {
-    $Scope           = $entry.Scope
-    $AssignmentScope = $entry.AssignmentScope
-    $StartTime       = Get-Date -Format o
+    $AssignmentScope = $entry.Scope
+    $principalName   = $entry.principalName
+    $roleName        = $entry.roleName
 
-    # ─── 1) RESOLVE ROLE DEFINITION ID ────────────────────────────────────────────
-    $roleName = $entry.RoleDefinition
-    # Try by built-in Name first; if that fails, look up by DisplayName
-    try {
-        $roleObj = Get-AzRoleDefinition -Name $roleName -ErrorAction Stop
+    # ————————————————————————————————
+    # 1. Resolve Principal (user or group) → PrincipalId
+    $principal = Get-AzADUser  -UserPrincipalName $principalName -ErrorAction SilentlyContinue
+    if (-not $principal) {
+        $principal = Get-AzADGroup -DisplayName        $principalName -ErrorAction SilentlyContinue
     }
-    catch {
-        $roleObj = Get-AzRoleDefinition -Filter "properties/displayName eq '$roleName'" -ErrorAction Stop
-    }
-    $RoleDefinitionId = $roleObj.Id
-
-    # ─── 2) RESOLVE PRINCIPAL ID ──────────────────────────────────────────────────
-    $principalName = $entry.Principal
-    # Try user by UPN or displayName
-    $adUser = Get-AzADUser -Filter "userPrincipalName eq '$principalName' or displayName eq '$principalName'" `
-              -ErrorAction SilentlyContinue
-    if ($adUser) {
-        $PrincipalId = $adUser.Id
-    }
-    else {
-        # Fallback to group by displayName
-        $adGroup = Get-AzADGroup -Filter "displayName eq '$principalName'" -ErrorAction Stop
-        $PrincipalId = $adGroup.Id
-    }
-
-    # ─── 3) UPDATE ROLE MANAGEMENT POLICY ─────────────────────────────────────────
-    $GetPolicy = Get-AzRoleManagementPolicyAssignment -Scope $Scope `
-                   | Where-Object Name -like "*$($entry.RoleId)"
-    $PolicyId  = ($GetPolicy.PolicyId -split "/")[-1]
-
-    # (re-use your existing rule objects here…)
-    $AllRules = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.IRoleManagementPolicyRule[]]@(
-        $ExpirationRuleAdminEligible,
-        $ExpirationRuleAdminActive,
-        $EnablementRuleAdmin
-    )
-    Update-AzRoleManagementPolicy -Scope $Scope -Name $PolicyId -Rule $AllRules
-
-    # ─── 4) SKIP OR CREATE ELIGIBILITY ────────────────────────────────────────────
-    $allSchedules = Get-AzRoleEligibilityScheduleRequest `
-        -Scope $AssignmentScope `
-        -Filter "principalId eq '$PrincipalId'" `
-        -ErrorAction SilentlyContinue
-
-    $existing = $allSchedules | Where-Object {
-        $_.RoleDefinitionId -eq $RoleDefinitionId -and
-        $_.Scope            -eq $AssignmentScope
-    }
-
-    if ($existing) {
-        Write-Host "Skipping—eligibility already exists for '$principalName' as '$roleName'"
+    if (-not $principal) {
+        Write-Warning "Cannot find a user or group named '$principalName'; skipping."
         continue
     }
+    $PrincipalId = $principal.Id
 
-    # Create new eligibility schedule
-    $params = @{
-        Name                      = [Guid]::NewGuid().ToString()
-        Scope                     = $AssignmentScope
-        PrincipalId               = $PrincipalId
-        RoleDefinitionId          = $RoleDefinitionId
-        RequestType               = "AdminAssign"
-        ScheduleInfoStartDateTime = $StartTime
-        Duration                  = $entry.Duration
-        Justification             = $entry.Justification
+    # ————————————————————————————————
+    # 2. Resolve Role → RoleDefinitionId
+    #    Match either the built-in RoleName or DisplayName
+    $roleDef = Get-AzRoleDefinition |
+        Where-Object { $_.RoleName    -eq $roleName -or
+                       $_.DisplayName -eq $roleName }
+    if (-not $roleDef) {
+        Write-Warning "No role with name/displayName '$roleName'; skipping."
+        continue
     }
-    New-AzRoleEligibilityScheduleRequest @params
-}
+    $RoleDefinitionId = $roleDef.Id
 
-# ─── CONFIG ───────────────────────────────────────────────────────────────────────
-$csvPath = "/agent/_work/1/s/CTB/TemplateFiles/CSVS/PIM.csv"
-$entries = Import-Csv -Path $csvPath
-
-# (Optional) Default values for PIM schedule:
-$DefaultDuration     = "P30D"
-$DefaultJustification = "Auto-assigned via script"
-
-foreach ($entry in $entries) {
-
-    # ─── 1) PARSE CSV ROW ──────────────────────────────────────────────────────────
-    $Scope               = $entry.Scope
-    $roleDefName         = $entry.RoleDefinitionName
-    $principalName       = $entry.PrincipalName
-    $startTime           = (Get-Date).ToString('o')
-
-    # ─── 2) RESOLVE ROLE DEFINITION → ID ─────────────────────────────────────────
-    $roleDef = Get-AzRoleDefinition -Name $roleDefName -ErrorAction Stop
-    $roleDefId = $roleDef.Id
-
-    # ─── 3) RESOLVE PRINCIPAL → ID ───────────────────────────────────────────────
-    $adUser = Get-AzADUser -Filter "userPrincipalName eq '$principalName' or displayName eq '$principalName'" `
-               -ErrorAction SilentlyContinue
-    if ($adUser) {
-        $principalId = $adUser.Id
-    }
-    else {
-        $adGroup     = Get-AzADGroup -Filter "displayName eq '$principalName'" -ErrorAction Stop
-        $principalId = $adGroup.Id
-    }
-
-    # ─── 4) FIND YOUR POLICY ASSIGNMENT ──────────────────────────────────────────
-    #    by matching RoleDefinitionId at that same Scope
-    $policyAssign = Get-AzRoleManagementPolicyAssignment -Scope $Scope |
-                     Where-Object RoleDefinitionId -eq $roleDefId
-
-    $policyId           = ($policyAssign.PolicyId -split "/")[-1]
-    $currentRoleDefId   = $policyAssign.RoleDefinitionId
-
-    # ─── 5) UPDATE POLICY ASSIGNMENT RULES (if needed) ──────────────────────────
-    #    (reuse your existing rule objects here)
-    $AllRules = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.IRoleManagementPolicyRule[]]@(
-        $ExpirationRuleAdminEligible,
-        $ExpirationRuleAdminActive,
-        $EnablementRuleAdmin
-    )
-    Update-AzRoleManagementPolicy -Scope $Scope -Name $policyId -Rule $AllRules
-
-    # ─── 6) CHECK FOR EXISTING PIM ELIGIBILITY ────────────────────────────────────
-    #  (filter server-side by principal, then client-side by role+scope)
+    # ————————————————————————————————
+    # 3. Check for existing eligibility request
+    $filter       = "principalId eq '$PrincipalId'"
     $allSchedules = Get-AzRoleEligibilityScheduleRequest `
-        -Scope $Scope `
-        -Filter "principalId eq '$principalId'" `
+        -Scope  $AssignmentScope `
+        -Filter $filter `
         -ErrorAction SilentlyContinue
 
-    $already = $allSchedules | Where-Object {
-        $_.RoleDefinitionId -eq $roleDefId -and
-        $_.Scope           -eq $Scope
-    }
+    $already = $allSchedules |
+        Where-Object {
+            $_.RoleDefinitionId -eq $RoleDefinitionId -and
+            $_.Scope            -eq $AssignmentScope
+        }
 
     if ($already) {
-        Write-Host "Skipping: eligibility already exists for '$principalName' on role '$roleDefName'."
+        Write-Host "Skipping—eligibility already exists for $principalName @ $AssignmentScope"
         continue
     }
 
-    # ─── 7) CREATE NEW PIM ELIGIBILITY ───────────────────────────────────────────
-    $params = @{
-        Name                      = [Guid]::NewGuid().ToString()
-        Scope                     = $Scope
-        PrincipalId               = $principalId
-        RoleDefinitionId          = $roleDefId
-        RequestType               = "AdminAssign"
-        ScheduleInfoStartDateTime = $startTime
-        Duration                  = $DefaultDuration
-        Justification             = $DefaultJustification
-    }
-    New-AzRoleEligibilityScheduleRequest @params -ErrorAction Stop
+    # ————————————————————————————————
+    # 4. Create a new eligibility request
+    $Guid      = [Guid]::NewGuid().ToString()
+    $StartTime = (Get-Date).ToString('o')
 
-    Write-Host "Created eligibility for '$principalName' on role '$roleDefName'."
+    New-AzRoleEligibilityScheduleRequest `
+        -Name                      $Guid `
+        -Scope                     $AssignmentScope `
+        -PrincipalId               $PrincipalId `
+        -RoleDefinitionId          $RoleDefinitionId `
+        -RequestType               AdminAssign `
+        -ScheduleInfoStartDateTime $StartTime `
+        -Duration                  $DefaultDuration `
+        -Justification             $DefaultJustification
+
+    Write-Host "Created eligibility for $principalName → '$roleName' @ $AssignmentScope"
 }
