@@ -1,15 +1,60 @@
+Here’s an end-to-end example that:
+
+1. Reads your three-column CSV (Scope, principalName, roleName)
+
+
+2. Looks up the user/group and role, skips if an eligibility schedule already exists
+
+
+3. Creates the new eligibility schedule
+
+
+4. Then configures your “Admin Eligible” expiration rule (and any others) on that same scope’s Role Management Policy
+
+
+
 # ————————————————————————————————
 # CONFIGURATION
 # Path to your CSV (must have headers: Scope, principalName, roleName)
 $CsvPath = 'C:\path\to\assignments.csv'
 
-# Defaults for any missing columns (since CSV only has 3)
-# You can tweak these or prompt for them instead
-$DefaultDuration      = 'P1D'                         # ISO8601 duration (e.g. 'P1D' = 1 day)
+# Defaults for schedule creation
+$DefaultDuration      = 'P1D'                         # ISO8601 duration (1 day)
 $DefaultJustification = 'Automated assignment script' 
 
 # ————————————————————————————————
-# IMPORT
+# EXPIRATION RULES: how long someone can remain *eligible*
+$ExpirationRuleAdminEligible = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyExpirationRule]@{
+    isExpirationRequired  = $false
+    maximumDuration       = 'P365D'
+    id                    = 'Expiration_Admin_Eligibility'
+    ruleType              = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Support.RoleManagementPolicyRuleType]::RoleManagementPolicyExpirationRule
+    targetOperation       = @('All')
+}
+
+# (Optional) other rules you might have, e.g. for “Admin Active” or “Enablement”
+$ExpirationRuleAdminActive = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyExpirationRule]@{
+    isExpirationRequired  = $true
+    maximumDuration       = 'PT8H'     # 8 hours active
+    id                    = 'Expiration_Admin_Active'
+    ruleType              = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Support.RoleManagementPolicyRuleType]::RoleManagementPolicyExpirationRule
+    targetOperation       = @('All')
+}
+$EnablementRuleAdmin = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyAutoReviewRule]@{
+    id             = 'AutoReview_Admin'
+    ruleType       = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Support.RoleManagementPolicyRuleType]::RoleManagementPolicyApprovalRule
+    isEnabled      = $true
+    recurrence      = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyRecurrencePattern]@{
+        recurrenceType = 'Weekly'
+        schedule       = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicySchedule]@{
+            daysOfWeek = @('Sunday')
+        }
+    }
+    scopeSettings = @()
+}
+
+# ————————————————————————————————
+# IMPORT CSV
 $entries = Import-Csv -Path $CsvPath
 
 foreach ($entry in $entries) {
@@ -18,7 +63,7 @@ foreach ($entry in $entries) {
     $roleName        = $entry.roleName
 
     # ————————————————————————————————
-    # 1. Resolve Principal (user or group) → PrincipalId
+    # 1) Resolve PrincipalId from user or group
     $principal = Get-AzADUser  -UserPrincipalName $principalName -ErrorAction SilentlyContinue
     if (-not $principal) {
         $principal = Get-AzADGroup -DisplayName        $principalName -ErrorAction SilentlyContinue
@@ -30,8 +75,7 @@ foreach ($entry in $entries) {
     $PrincipalId = $principal.Id
 
     # ————————————————————————————————
-    # 2. Resolve Role → RoleDefinitionId
-    #    Match either the built-in RoleName or DisplayName
+    # 2) Resolve RoleDefinitionId from roleName / displayName
     $roleDef = Get-AzRoleDefinition |
         Where-Object { $_.RoleName    -eq $roleName -or
                        $_.DisplayName -eq $roleName }
@@ -42,11 +86,10 @@ foreach ($entry in $entries) {
     $RoleDefinitionId = $roleDef.Id
 
     # ————————————————————————————————
-    # 3. Check for existing eligibility request
-    $filter       = "principalId eq '$PrincipalId'"
+    # 3) Skip if an eligibility request already exists
     $allSchedules = Get-AzRoleEligibilityScheduleRequest `
         -Scope  $AssignmentScope `
-        -Filter $filter `
+        -Filter "principalId eq '$PrincipalId'" `
         -ErrorAction SilentlyContinue
 
     $already = $allSchedules |
@@ -54,14 +97,13 @@ foreach ($entry in $entries) {
             $_.RoleDefinitionId -eq $RoleDefinitionId -and
             $_.Scope            -eq $AssignmentScope
         }
-
     if ($already) {
         Write-Host "Skipping—eligibility already exists for $principalName @ $AssignmentScope"
         continue
     }
 
     # ————————————————————————————————
-    # 4. Create a new eligibility request
+    # 4) Create the new eligibility schedule
     $Guid      = [Guid]::NewGuid().ToString()
     $StartTime = (Get-Date).ToString('o')
 
@@ -76,4 +118,49 @@ foreach ($entry in $entries) {
         -Justification             $DefaultJustification
 
     Write-Host "Created eligibility for $principalName → '$roleName' @ $AssignmentScope"
+
+    # ————————————————————————————————
+    # 5) Ensure your Role Management Policy on this scope includes the expiration rule
+    #    First, grab the existing policy (assumes you've already created one)
+    $policy = Get-AzRoleManagementPolicy -Scope $AssignmentScope -ErrorAction SilentlyContinue
+    if (-not $policy) {
+        Write-Warning "No Role Management Policy found at $AssignmentScope; you may need to create one first."
+        continue
+    }
+    $PolicyId = $policy.Name
+
+    # Merge in your rules
+    $AllRules = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.IRoleManagementPolicyRule[]]@(
+        $ExpirationRuleAdminEligible,
+        $ExpirationRuleAdminActive,
+        $EnablementRuleAdmin
+    )
+
+    # Update the policy
+    Update-AzRoleManagementPolicy -Scope $AssignmentScope -Name $PolicyId -Rule $AllRules
+    Write-Host "Updated Role Management Policy '$PolicyId' with expiration + enablement rules"
 }
+
+What’s going on
+
+1. Expiration‐rule objects
+We construct your RoleManagementPolicyExpirationRule as you showed, plus two other sample rules ($ExpirationRuleAdminActive, $EnablementRuleAdmin) to illustrate how you bundle them.
+
+
+2. CSV loop
+Unchanged from our last version, except now after we create the eligibility schedule we…
+
+
+3. Fetch & update the Role Management Policy
+
+Get-AzRoleManagementPolicy at the same scope
+
+Build an array of all the rules you want kept on that policy
+
+Update-AzRoleManagementPolicy -Rule $AllRules to overwrite the policy’s rule set
+
+
+
+
+You can of course tweak which rules go in $AllRules, change IDs, durations, enablement patterns, etc., but this shows exactly how to “add this condition” into the same script.
+
