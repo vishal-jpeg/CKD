@@ -1,27 +1,59 @@
-$csvRows = Import‑Csv 'eligibility‑requests.csv'
+$csvPath = "/agent/_work/1/s/CTB/TemplateFiles/CSVS/PIM.csv"
+$entries = Import-Csv -Path $csvPath
 
-foreach ($row in $csvRows | Where RequestType -eq 'AdminAssign') {
-    # 1. Look for an existing schedule for this principal+role+scope
-    $existing = Get‑AzRoleEligibilityScheduleRequest `
-       -Filter "PrincipalId eq '$($row.PrincipalId)' and `
-               + "RoleDefinitionId eq '$($row.RoleDefinitionId)' and `
-               + "DirectoryScopeId eq '$($row.Scope)'" `
-       -ErrorAction SilentlyContinue
+foreach ($entry in $entries) {
+    $RoleId           = $entry.RoleId
+    $Scope            = $entry.Scope
+    $AssignmentScope  = $entry.AssignmentScope
+    $PrincipalId      = $entry.Principalid
 
-    if ($existing) {
-        Write‑Verbose "Already exists, skipping: $($row.PrincipalId) @ $($row.Scope)"
-        continue   # ← skips into next CSV row
+    # Get Role Management Policy Assignment
+    $GetPolicy = Get-AzRoleManagementPolicyAssignment -Scope $Scope | Where-Object { $_.Name -like "*$RoleId" }
+
+    $PolicyId         = ($GetPolicy.PolicyId -split "/")[-1]
+    $RoleDefinitionId = $GetPolicy.RoleDefinitionId
+
+    # Configure expiration rule
+    $ExpirationRuleAdminEligible = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyExpirationRule]@{
+        isExpirationRequired = "false";
+        maximumDuration      = "P365D";
+        id                   = "Expiration_Admin_Eligibility";
+        ruleType             = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Support.RoleManagementPolicyRuleType]("RoleManagementPolicyExpirationRule");
+        targetOperation      = @('All');
     }
 
-    # 2. Only new entries land here, so create them
-    New‑AzRoleEligibilityScheduleRequest `
-      -Name             ([Guid]::NewGuid().ToString()) `
-      -Scope            $row.Scope `
-      -PrincipalId      $row.PrincipalId `
-      -RoleDefinitionId $row.RoleDefinitionId `
-      -RequestType      AdminAssign `
-      -StartDateTime    $row.StartDateTime `
-      -Duration         $row.Duration `
-      -Justification    $row.Justification `
-      -ErrorAction      Stop
+    $AllRules = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.IRoleManagementPolicyRule[]]@(
+        $ExpirationRuleAdminEligible,
+        $ExpirationRuleAdminActive,
+        $EnablementRuleAdmin
+    )
+
+    # Update Policy
+    Update-AzRoleManagementPolicy -Scope $Scope -Name $PolicyId -Rule $AllRules
+
+    # BEFORE CREATING A NEW ROLE ELIGIBILITY SCHEDULE, CHECK IF IT ALREADY EXISTS
+    $existing = Get-AzRoleEligibilityScheduleRequest `
+        -Filter "PrincipalId eq '$PrincipalId' and RoleDefinitionId eq '$RoleDefinitionId' and DirectoryScopeId eq '$AssignmentScope'" `
+        -ErrorAction SilentlyContinue
+
+    if ($existing) {
+        Write-Host "Eligibility already exists for PrincipalId=$PrincipalId, skipping..."
+        continue
+    }
+
+    # If no existing eligibility found, create a new one
+    $Guid       = [Guid]::NewGuid().ToString()
+    $StartTime  = Get-Date -Format o
+
+    $AssignmentParams = @{
+        Name                      = $Guid
+        Scope                     = $AssignmentScope
+        ExpirationType            = "NoExpiration"
+        PrincipalId               = $PrincipalId
+        RequestType               = "AdminAssign"
+        RoleDefinitionId          = $RoleDefinitionId
+        ScheduleInfoStartDateTime = $StartTime
+    }
+
+    New-AzRoleEligibilityScheduleRequest @AssignmentParams
 }
