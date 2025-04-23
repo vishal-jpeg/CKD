@@ -1,187 +1,75 @@
-Here’s an end-to-end example that:
-
-1. Reads your three-column CSV (Scope, principalName, roleName)
-
-
-2. Looks up the user/group and role, skips if an eligibility schedule already exists
-
-
-3. Creates the new eligibility schedule
-
-
-4. Then configures your “Admin Eligible” expiration rule (and any others) on that same scope’s Role Management Policy
-
-
-
-# ————————————————————————————————
-# CONFIGURATION
-# Path to your CSV (must have headers: Scope, principalName, roleName)
-$CsvPath = 'C:\path\to\assignments.csv'
-
-# Defaults for schedule creation
-$DefaultDuration      = 'P1D'                         # ISO8601 duration (1 day)
-$DefaultJustification = 'Automated assignment script' 
-
-# ————————————————————————————————
-# EXPIRATION RULES: how long someone can remain *eligible*
-$ExpirationRuleAdminEligible = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyExpirationRule]@{
-    isExpirationRequired  = $false
-    maximumDuration       = 'P365D'
-    id                    = 'Expiration_Admin_Eligibility'
-    ruleType              = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Support.RoleManagementPolicyRuleType]::RoleManagementPolicyExpirationRule
-    targetOperation       = @('All')
-}
-
-# (Optional) other rules you might have, e.g. for “Admin Active” or “Enablement”
-$ExpirationRuleAdminActive = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyExpirationRule]@{
-    isExpirationRequired  = $true
-    maximumDuration       = 'PT8H'     # 8 hours active
-    id                    = 'Expiration_Admin_Active'
-    ruleType              = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Support.RoleManagementPolicyRuleType]::RoleManagementPolicyExpirationRule
-    targetOperation       = @('All')
-}
-$EnablementRuleAdmin = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyAutoReviewRule]@{
-    id             = 'AutoReview_Admin'
-    ruleType       = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Support.RoleManagementPolicyRuleType]::RoleManagementPolicyApprovalRule
-    isEnabled      = $true
-    recurrence      = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicyRecurrencePattern]@{
-        recurrenceType = 'Weekly'
-        schedule       = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.RoleManagementPolicySchedule]@{
-            daysOfWeek = @('Sunday')
-        }
-    }
-    scopeSettings = @()
-}
-
-# ————————————————————————————————
-# IMPORT CSV
-$entries = Import-Csv -Path $CsvPath
+$csvPath = "/agent/_work/1/s/CTB/TemplateFiles/CSVS/PIM.csv"
+$entries = Import-Csv -Path $csvPath
 
 foreach ($entry in $entries) {
-    $AssignmentScope = $entry.Scope
-    $principalName   = $entry.principalName
-    $roleName        = $entry.roleName
+    $Scope           = $entry.Scope
+    $AssignmentScope = $entry.AssignmentScope
+    $StartTime       = Get-Date -Format o
 
-    # ————————————————————————————————
-    # 1) Resolve PrincipalId from user or group
-    $principal = Get-AzADUser  -UserPrincipalName $principalName -ErrorAction SilentlyContinue
-    if (-not $principal) {
-        $principal = Get-AzADGroup -DisplayName        $principalName -ErrorAction SilentlyContinue
+    # ─── 1) RESOLVE ROLE DEFINITION ID ────────────────────────────────────────────
+    $roleName = $entry.RoleDefinition
+    # Try by built-in Name first; if that fails, look up by DisplayName
+    try {
+        $roleObj = Get-AzRoleDefinition -Name $roleName -ErrorAction Stop
     }
-    if (-not $principal) {
-        Write-Warning "Cannot find a user or group named '$principalName'; skipping."
-        continue
+    catch {
+        $roleObj = Get-AzRoleDefinition -Filter "properties/displayName eq '$roleName'" -ErrorAction Stop
     }
-    $PrincipalId = $principal.Id
+    $RoleDefinitionId = $roleObj.Id
 
-    # ————————————————————————————————
-    # 2) Resolve RoleDefinitionId from roleName / displayName
-    $roleDef = Get-AzRoleDefinition |
-        Where-Object { $_.RoleName    -eq $roleName -or
-                       $_.DisplayName -eq $roleName }
-    if (-not $roleDef) {
-        Write-Warning "No role with name/displayName '$roleName'; skipping."
-        continue
+    # ─── 2) RESOLVE PRINCIPAL ID ──────────────────────────────────────────────────
+    $principalName = $entry.Principal
+    # Try user by UPN or displayName
+    $adUser = Get-AzADUser -Filter "userPrincipalName eq '$principalName' or displayName eq '$principalName'" `
+              -ErrorAction SilentlyContinue
+    if ($adUser) {
+        $PrincipalId = $adUser.Id
     }
-    $RoleDefinitionId = $roleDef.Id
-
-    # ————————————————————————————————
-    # 3) Skip if an eligibility request already exists
-    $allSchedules = Get-AzRoleEligibilityScheduleRequest `
-        -Scope  $AssignmentScope `
-        -Filter "principalId eq '$PrincipalId'" `
-        -ErrorAction SilentlyContinue
-
-    $already = $allSchedules |
-        Where-Object {
-            $_.RoleDefinitionId -eq $RoleDefinitionId -and
-            $_.Scope            -eq $AssignmentScope
-        }
-    if ($already) {
-        Write-Host "Skipping—eligibility already exists for $principalName @ $AssignmentScope"
-        continue
+    else {
+        # Fallback to group by displayName
+        $adGroup = Get-AzADGroup -Filter "displayName eq '$principalName'" -ErrorAction Stop
+        $PrincipalId = $adGroup.Id
     }
 
-    # ————————————————————————————————
-    # 4) Create the new eligibility schedule
-    $Guid      = [Guid]::NewGuid().ToString()
-    $StartTime = (Get-Date).ToString('o')
+    # ─── 3) UPDATE ROLE MANAGEMENT POLICY ─────────────────────────────────────────
+    $GetPolicy = Get-AzRoleManagementPolicyAssignment -Scope $Scope `
+                   | Where-Object Name -like "*$($entry.RoleId)"
+    $PolicyId  = ($GetPolicy.PolicyId -split "/")[-1]
 
-    New-AzRoleEligibilityScheduleRequest `
-        -Name                      $Guid `
-        -Scope                     $AssignmentScope `
-        -PrincipalId               $PrincipalId `
-        -RoleDefinitionId          $RoleDefinitionId `
-        -RequestType               AdminAssign `
-        -ScheduleInfoStartDateTime $StartTime `
-        -Duration                  $DefaultDuration `
-        -Justification             $DefaultJustification
-
-    Write-Host "Created eligibility for $principalName → '$roleName' @ $AssignmentScope"
-
-    # ————————————————————————————————
-    # 5) Ensure your Role Management Policy on this scope includes the expiration rule
-    #    First, grab the existing policy (assumes you've already created one)
-    $policy = Get-AzRoleManagementPolicy -Scope $AssignmentScope -ErrorAction SilentlyContinue
-    if (-not $policy) {
-        Write-Warning "No Role Management Policy found at $AssignmentScope; you may need to create one first."
-        continue
-    }
-    $PolicyId = $policy.Name
-
-    # Merge in your rules
+    # (re-use your existing rule objects here…)
     $AllRules = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.IRoleManagementPolicyRule[]]@(
         $ExpirationRuleAdminEligible,
         $ExpirationRuleAdminActive,
         $EnablementRuleAdmin
     )
+    Update-AzRoleManagementPolicy -Scope $Scope -Name $PolicyId -Rule $AllRules
 
-    # Update the policy
-    Update-AzRoleManagementPolicy -Scope $AssignmentScope -Name $PolicyId -Rule $AllRules
-    Write-Host "Updated Role Management Policy '$PolicyId' with expiration + enablement rules"
-}
-
-What’s going on
-
-1. Expiration‐rule objects
-We construct your RoleManagementPolicyExpirationRule as you showed, plus two other sample rules ($ExpirationRuleAdminActive, $EnablementRuleAdmin) to illustrate how you bundle them.
-
-
-2. CSV loop
-Unchanged from our last version, except now after we create the eligibility schedule we…
-
-
-3. Fetch & update the Role Management Policy
-
-Get-AzRoleManagementPolicy at the same scope
-
-Build an array of all the rules you want kept on that policy
-
-Update-AzRoleManagementPolicy -Rule $AllRules to overwrite the policy’s rule set
-
-
-
-
-You can of course tweak which rules go in $AllRules, change IDs, durations, enablement patterns, etc., but this shows exactly how to “add this condition” into the same script.
-
-# …inside your foreach loop…
-
-# 1) Resolve principal by email address only
-$principal = Get-AzADUser `
-    -Filter "userPrincipalName eq '$principalName' or mail eq '$principalName'" `
-    -ErrorAction SilentlyContinue
-
-if (-not $principal) {
-    $principal = Get-AzADGroup `
-        -Filter "mail eq '$principalName'" `
+    # ─── 4) SKIP OR CREATE ELIGIBILITY ────────────────────────────────────────────
+    $allSchedules = Get-AzRoleEligibilityScheduleRequest `
+        -Scope $AssignmentScope `
+        -Filter "principalId eq '$PrincipalId'" `
         -ErrorAction SilentlyContinue
+
+    $existing = $allSchedules | Where-Object {
+        $_.RoleDefinitionId -eq $RoleDefinitionId -and
+        $_.Scope            -eq $AssignmentScope
+    }
+
+    if ($existing) {
+        Write-Host "Skipping—eligibility already exists for '$principalName' as '$roleName'"
+        continue
+    }
+
+    # Create new eligibility schedule
+    $params = @{
+        Name                      = [Guid]::NewGuid().ToString()
+        Scope                     = $AssignmentScope
+        PrincipalId               = $PrincipalId
+        RoleDefinitionId          = $RoleDefinitionId
+        RequestType               = "AdminAssign"
+        ScheduleInfoStartDateTime = $StartTime
+        Duration                  = $entry.Duration
+        Justification             = $entry.Justification
+    }
+    New-AzRoleEligibilityScheduleRequest @params
 }
-
-if (-not $principal) {
-    Write-Warning "Cannot find a user or group with email '$principalName'; skipping."
-    continue
-}
-
-$PrincipalId = $principal.Id
-
-# …then go on to resolve role, check existing schedules, etc. as before…
