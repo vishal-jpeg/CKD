@@ -164,3 +164,24 @@ Update-AzRoleManagementPolicy -Rule $AllRules to overwrite the policy’s rule s
 
 You can of course tweak which rules go in $AllRules, change IDs, durations, enablement patterns, etc., but this shows exactly how to “add this condition” into the same script.
 
+# …inside your foreach loop…
+
+# 1) Resolve principal by email address only
+$principal = Get-AzADUser `
+    -Filter "userPrincipalName eq '$principalName' or mail eq '$principalName'" `
+    -ErrorAction SilentlyContinue
+
+if (-not $principal) {
+    $principal = Get-AzADGroup `
+        -Filter "mail eq '$principalName'" `
+        -ErrorAction SilentlyContinue
+}
+
+if (-not $principal) {
+    Write-Warning "Cannot find a user or group with email '$principalName'; skipping."
+    continue
+}
+
+$PrincipalId = $principal.Id
+
+# …then go on to resolve role, check existing schedules, etc. as before…
