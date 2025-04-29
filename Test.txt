@@ -1,7 +1,5 @@
 trigger: none
 
-name: Deploy_PIMAssignment
-
 variables:
   azureServiceConnection: 'ctb-ac-sc-mb-graph'
   powershellFile: './CTB/TemplateFiles/PowershellSpts/PIMAssignment.ps1'
@@ -10,43 +8,48 @@ pool:
   name: Merchantss
 
 stages:
-- stage: RunGraphScript
+- stage: PowershellCodeExecution
   jobs:
-  - job: InstallAndRun
+  - job: PowershellCodeExecution
+    displayName: Powershell Scripts
     steps:
     - task: AzurePowerShell@5
-      name: GetAccessToken
+      displayName: 'Get Graph Access Token'
       inputs:
         azureSubscription: $(azureServiceConnection)
-        ScriptType: 'InlineScript'
-        azurePowerShellVersion: 'LatestVersion'
-        pwsh: true
+        ScriptType: 'inlineScript'
         Inline: |
-          $token = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com").Token
-          Write-Host "##vso[task.setvariable variable=GraphAccessToken;issecret=true]$token"
+          $accessToken = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com").Token
+          Write-Host "##vso[task.setvariable variable=accessToken;issecret=true]$accessToken"
+        azurePowerShellVersion: latestVersion
+        pwsh: true
 
     - task: PowerShell@2
-      displayName: 'Install Graph Modules & Run Script'
+      displayName: 'Run Graph Script'
       inputs:
-        targetType: 'inline'
+        targetType: 'filePath'
+        filePath: $(powershellFile)
+        arguments: >
+          -AccessPackageName "$(AccessPackageName)"
+          -AccessPackageDescription "$(AccessPackageDescription)"
+          -CatalogName "$(CatalogName)"
+          -GroupDisplayNames "$(GroupDisplayNames)"
+          -PrimaryApproverDisplayNames "$(PrimaryApproverDisplayNames)"
         pwsh: true
-        script: |
-          # Install required Microsoft Graph modules
-          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
-          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
-          Install-Module Microsoft.Graph.Beta.Identity.Governance -Force -Scope CurrentUser
 
-          # Secure the token
-          $secureToken = ConvertTo-SecureString -String "$(GraphAccessToken)" -AsPlainText -Force
+# Ensure required Graph modules are installed
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -ErrorAction SilentlyContinue
+Install-Module Microsoft.Graph.Groups -Scope CurrentUser -Force -ErrorAction SilentlyContinue
+Install-Module Microsoft.Graph.Beta.Identity.Governance -Scope CurrentUser -Force -ErrorAction SilentlyContinue
 
-          # Connect to Microsoft Graph
-          Connect-MgGraph -AccessToken $secureToken -NoWelcome
-          Select-MgProfile -Name "beta"
+# Import the necessary modules
+Import-Module Microsoft.Graph.Authentication
+Import-Module Microsoft.Graph.Groups
+Import-Module Microsoft.Graph.Beta.Identity.Governance
 
-          # Run your main script
-          . "$(Build.SourcesDirectory)/CTB/TemplateFiles/PowershellSpts/PIMAssignment.ps1" `
-              -AccessPackageName "PackageName" `
-              -AccessPackageDescription "Description" `
-              -CatalogName "CatalogName" `
-              -GroupDisplayNames @("Group1", "Group2") `
-              -PrimaryApproverDisplayNames @("Approver1", "Approver2")
+# Use Beta profile for beta cmdlets
+Select-MgProfile -Name "beta"
+
+# Connect to Microsoft Graph
+$secureToken = ConvertTo-SecureString -String $env:accessToken -AsPlainText -Force
+Connect-MgGraph -AccessToken $secureToken -NoWelcome
