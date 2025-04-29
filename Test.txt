@@ -1,48 +1,52 @@
 trigger: none
 
-name: Deploy-GraphConnection
+name: Deploy_PIMAssignment
 
 variables:
   azureServiceConnection: 'ctb-ac-sc-mb-graph'
+  powershellFile: './CTB/TemplateFiles/PowershellSpts/PIMAssignment.ps1'
+
+pool:
+  name: Merchantss
 
 stages:
-- stage: PowershellCodeExecution
-  displayName: 'Connect to Microsoft Graph'
+- stage: RunGraphScript
   jobs:
-  - job: PowershellCodeExecution
-    displayName: 'Run Graph Script'
+  - job: InstallAndRun
     steps:
-    
-    # Step 1: Get the Microsoft Graph Access Token using Managed Identity
     - task: AzurePowerShell@5
-      name: GetToken
-      displayName: 'Get Graph Access Token'
+      name: GetAccessToken
       inputs:
         azureSubscription: $(azureServiceConnection)
         ScriptType: 'InlineScript'
-        Inline: |
-          $accessToken = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com").Token
-          Write-Host "##vso[task.setvariable variable=accessToken;issecret=true]$accessToken"
-        azurePowerShellVersion: LatestVersion
+        azurePowerShellVersion: 'LatestVersion'
         pwsh: true
+        Inline: |
+          $token = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com").Token
+          Write-Host "##vso[task.setvariable variable=GraphAccessToken;issecret=true]$token"
 
-    # Step 2: Install Graph module, connect using token, and verify the connection
     - task: PowerShell@2
-      displayName: 'Install and Connect to Microsoft Graph'
+      displayName: 'Install Graph Modules & Run Script'
       inputs:
         targetType: 'inline'
+        pwsh: true
         script: |
-          Write-Host "Installing Microsoft Graph module..."
-          Install-Module Microsoft.Graph -Scope CurrentUser -Force -AllowClobber
+          # Install required Microsoft Graph modules
+          Install-Module Microsoft.Graph.Authentication -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Groups -Force -Scope CurrentUser
+          Install-Module Microsoft.Graph.Beta.Identity.Governance -Force -Scope CurrentUser
 
-          $secureToken = ConvertTo-SecureString -String "$(accessToken)" -AsPlainText -Force
+          # Secure the token
+          $secureToken = ConvertTo-SecureString -String "$(GraphAccessToken)" -AsPlainText -Force
+
+          # Connect to Microsoft Graph
           Connect-MgGraph -AccessToken $secureToken -NoWelcome
+          Select-MgProfile -Name "beta"
 
-          # Verify connection
-          try {
-              $me = Get-MgUser -UserId 'me'
-              Write-Host "Successfully connected to Microsoft Graph as: $($me.DisplayName)"
-          } catch {
-              Write-Error "Failed to connect to Microsoft Graph: $_"
-              throw
-          }
+          # Run your main script
+          . "$(Build.SourcesDirectory)/CTB/TemplateFiles/PowershellSpts/PIMAssignment.ps1" `
+              -AccessPackageName "PackageName" `
+              -AccessPackageDescription "Description" `
+              -CatalogName "CatalogName" `
+              -GroupDisplayNames @("Group1", "Group2") `
+              -PrimaryApproverDisplayNames @("Approver1", "Approver2")
