@@ -1,17 +1,48 @@
-- task: PowerShell@2
-  displayName: 'Connect and Verify Microsoft Graph'
-  inputs:
-    targetType: 'inline'
-    script: |
-      Install-Module Microsoft.Graph -Scope CurrentUser -Force -AllowClobber
+trigger: none
 
-      $accessToken = "$(accessToken)"
-      Connect-MgGraph -AccessToken $accessToken -NoWelcome
+name: Deploy-GraphConnection
 
-      try {
-          $me = Get-MgUser -UserId 'me'
-          Write-Host "Successfully connected to Microsoft Graph as: $($me.DisplayName)"
-      } catch {
-          Write-Error "Microsoft Graph connection failed: $_"
-          throw
-      }
+variables:
+  azureServiceConnection: 'ctb-ac-sc-mb-graph'
+
+stages:
+- stage: PowershellCodeExecution
+  displayName: 'Connect to Microsoft Graph'
+  jobs:
+  - job: PowershellCodeExecution
+    displayName: 'Run Graph Script'
+    steps:
+    
+    # Step 1: Get the Microsoft Graph Access Token using Managed Identity
+    - task: AzurePowerShell@5
+      name: GetToken
+      displayName: 'Get Graph Access Token'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        ScriptType: 'InlineScript'
+        Inline: |
+          $accessToken = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com").Token
+          Write-Host "##vso[task.setvariable variable=accessToken;issecret=true]$accessToken"
+        azurePowerShellVersion: LatestVersion
+        pwsh: true
+
+    # Step 2: Install Graph module, connect using token, and verify the connection
+    - task: PowerShell@2
+      displayName: 'Install and Connect to Microsoft Graph'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "Installing Microsoft Graph module..."
+          Install-Module Microsoft.Graph -Scope CurrentUser -Force -AllowClobber
+
+          $secureToken = ConvertTo-SecureString -String "$(accessToken)" -AsPlainText -Force
+          Connect-MgGraph -AccessToken $secureToken -NoWelcome
+
+          # Verify connection
+          try {
+              $me = Get-MgUser -UserId 'me'
+              Write-Host "Successfully connected to Microsoft Graph as: $($me.DisplayName)"
+          } catch {
+              Write-Error "Failed to connect to Microsoft Graph: $_"
+              throw
+          }
