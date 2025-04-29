@@ -1,75 +1,35 @@
-$csvPath = "/agent/_work/1/s/CTB/TemplateFiles/CSVS/PIM.csv"
-$entries = Import-Csv -Path $csvPath
+stages:
+- stage: PowershellCodeExecution
+  jobs:
+  - job: PowershellCodeExecution
+    displayName: Powershell Scripts
+    steps:
 
-foreach ($entry in $entries) {
-    $Scope           = $entry.Scope
-    $AssignmentScope = $entry.AssignmentScope
-    $StartTime       = Get-Date -Format o
+    # Step 1: Get access token using Workload Identity Federation
+    - task: AzurePowerShell@5
+      displayName: 'Get Graph Access Token'
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        azurePowerShellVersion: LatestVersion
+        ScriptType: 'inlineScript'
+        Inline: |
+          $accessToken = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com" -ErrorAction Stop).Token
+          Write-Host "##vso[task.setvariable variable=accessToken;issecret=true]$accessToken"
+        pwsh: true
 
-    # ─── 1) RESOLVE ROLE DEFINITION ID ────────────────────────────────────────────
-    $roleName = $entry.RoleDefinition
-    # Try by built-in Name first; if that fails, look up by DisplayName
-    try {
-        $roleObj = Get-AzRoleDefinition -Name $roleName -ErrorAction Stop
-    }
-    catch {
-        $roleObj = Get-AzRoleDefinition -Filter "properties/displayName eq '$roleName'" -ErrorAction Stop
-    }
-    $RoleDefinitionId = $roleObj.Id
+    # Step 2: Install Microsoft Graph module
+    - task: PowerShell@2
+      displayName: 'Install Microsoft Graph Module'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Install-Module Microsoft.Graph -Scope CurrentUser -Force -AllowClobber
 
-    # ─── 2) RESOLVE PRINCIPAL ID ──────────────────────────────────────────────────
-    $principalName = $entry.Principal
-    # Try user by UPN or displayName
-    $adUser = Get-AzADUser -Filter "userPrincipalName eq '$principalName' or displayName eq '$principalName'" `
-              -ErrorAction SilentlyContinue
-    if ($adUser) {
-        $PrincipalId = $adUser.Id
-    }
-    else {
-        # Fallback to group by displayName
-        $adGroup = Get-AzADGroup -Filter "displayName eq '$principalName'" -ErrorAction Stop
-        $PrincipalId = $adGroup.Id
-    }
-
-    # ─── 3) UPDATE ROLE MANAGEMENT POLICY ─────────────────────────────────────────
-    $GetPolicy = Get-AzRoleManagementPolicyAssignment -Scope $Scope `
-                   | Where-Object Name -like "*$($entry.RoleId)"
-    $PolicyId  = ($GetPolicy.PolicyId -split "/")[-1]
-
-    # (re-use your existing rule objects here…)
-    $AllRules = [Microsoft.Azure.PowerShell.Cmdlets.Resources.Authorization.Models.Api20201001Preview.IRoleManagementPolicyRule[]]@(
-        $ExpirationRuleAdminEligible,
-        $ExpirationRuleAdminActive,
-        $EnablementRuleAdmin
-    )
-    Update-AzRoleManagementPolicy -Scope $Scope -Name $PolicyId -Rule $AllRules
-
-    # ─── 4) SKIP OR CREATE ELIGIBILITY ────────────────────────────────────────────
-    $allSchedules = Get-AzRoleEligibilityScheduleRequest `
-        -Scope $AssignmentScope `
-        -Filter "principalId eq '$PrincipalId'" `
-        -ErrorAction SilentlyContinue
-
-    $existing = $allSchedules | Where-Object {
-        $_.RoleDefinitionId -eq $RoleDefinitionId -and
-        $_.Scope            -eq $AssignmentScope
-    }
-
-    if ($existing) {
-        Write-Host "Skipping—eligibility already exists for '$principalName' as '$roleName'"
-        continue
-    }
-
-    # Create new eligibility schedule
-    $params = @{
-        Name                      = [Guid]::NewGuid().ToString()
-        Scope                     = $AssignmentScope
-        PrincipalId               = $PrincipalId
-        RoleDefinitionId          = $RoleDefinitionId
-        RequestType               = "AdminAssign"
-        ScheduleInfoStartDateTime = $StartTime
-        Duration                  = $entry.Duration
-        Justification             = $entry.Justification
-    }
-    New-AzRoleEligibilityScheduleRequest @params
-}
+    # Step 3: Authenticate to Graph
+    - task: PowerShell@2
+      displayName: 'Authenticate to Microsoft Graph'
+      inputs:
+        targetType: 'inline'
+        script: |
+          Write-Host "Authenticating to Graph API"
+          Connect-MgGraph -AccessToken "$(accessToken)" -NoWelcome
