@@ -1,35 +1,17 @@
-stages:
-- stage: PowershellCodeExecution
-  jobs:
-  - job: PowershellCodeExecution
-    displayName: Powershell Scripts
-    steps:
+- task: PowerShell@2
+  displayName: 'Connect and Verify Microsoft Graph'
+  inputs:
+    targetType: 'inline'
+    script: |
+      Install-Module Microsoft.Graph -Scope CurrentUser -Force -AllowClobber
 
-    # Step 1: Get access token using Workload Identity Federation
-    - task: AzurePowerShell@5
-      displayName: 'Get Graph Access Token'
-      inputs:
-        azureSubscription: $(azureServiceConnection)
-        azurePowerShellVersion: LatestVersion
-        ScriptType: 'inlineScript'
-        Inline: |
-          $accessToken = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com" -ErrorAction Stop).Token
-          Write-Host "##vso[task.setvariable variable=accessToken;issecret=true]$accessToken"
-        pwsh: true
+      $accessToken = "$(accessToken)"
+      Connect-MgGraph -AccessToken $accessToken -NoWelcome
 
-    # Step 2: Install Microsoft Graph module
-    - task: PowerShell@2
-      displayName: 'Install Microsoft Graph Module'
-      inputs:
-        targetType: 'inline'
-        script: |
-          Install-Module Microsoft.Graph -Scope CurrentUser -Force -AllowClobber
-
-    # Step 3: Authenticate to Graph
-    - task: PowerShell@2
-      displayName: 'Authenticate to Microsoft Graph'
-      inputs:
-        targetType: 'inline'
-        script: |
-          Write-Host "Authenticating to Graph API"
-          Connect-MgGraph -AccessToken "$(accessToken)" -NoWelcome
+      try {
+          $me = Get-MgUser -UserId 'me'
+          Write-Host "Successfully connected to Microsoft Graph as: $($me.DisplayName)"
+      } catch {
+          Write-Error "Microsoft Graph connection failed: $_"
+          throw
+      }
