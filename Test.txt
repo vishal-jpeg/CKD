@@ -1,55 +1,23 @@
-trigger: none
+$BodyAccessPackage = @{
+    catalogId   = $Catalog.Id
+    displayName = $AccessPackageName
+    description = $AccessPackageDescription
+}
 
-variables:
-  azureServiceConnection: 'ctb-ac-sc-mb-graph'
-  powershellFile: './CTB/TemplateFiles/PowershellSpts/PIMAssignment.ps1'
-
-pool:
-  name: Merchantss
-
-stages:
-- stage: PowershellCodeExecution
-  jobs:
-  - job: PowershellCodeExecution
-    displayName: Powershell Scripts
-    steps:
-    - task: AzurePowerShell@5
-      displayName: 'Get Graph Access Token'
-      inputs:
-        azureSubscription: $(azureServiceConnection)
-        ScriptType: 'inlineScript'
-        Inline: |
-          $accessToken = (Get-AzAccessToken -ResourceUrl "https://graph.microsoft.com").Token
-          Write-Host "##vso[task.setvariable variable=accessToken;issecret=true]$accessToken"
-        azurePowerShellVersion: latestVersion
-        pwsh: true
-
-    - task: PowerShell@2
-      displayName: 'Run Graph Script'
-      inputs:
-        targetType: 'filePath'
-        filePath: $(powershellFile)
-        arguments: >
-          -AccessPackageName "$(AccessPackageName)"
-          -AccessPackageDescription "$(AccessPackageDescription)"
-          -CatalogName "$(CatalogName)"
-          -GroupDisplayNames "$(GroupDisplayNames)"
-          -PrimaryApproverDisplayNames "$(PrimaryApproverDisplayNames)"
-        pwsh: true
-
-# Ensure required Graph modules are installed
-Install-Module Microsoft.Graph.Authentication -Scope CurrentUser -Force -ErrorAction SilentlyContinue
-Install-Module Microsoft.Graph.Groups -Scope CurrentUser -Force -ErrorAction SilentlyContinue
-Install-Module Microsoft.Graph.Beta.Identity.Governance -Scope CurrentUser -Force -ErrorAction SilentlyContinue
-
-# Import the necessary modules
-Import-Module Microsoft.Graph.Authentication
-Import-Module Microsoft.Graph.Groups
-Import-Module Microsoft.Graph.Beta.Identity.Governance
-
-# Use Beta profile for beta cmdlets
-Select-MgProfile -Name "beta"
-
-# Connect to Microsoft Graph
-$secureToken = ConvertTo-SecureString -String $env:accessToken -AsPlainText -Force
-Connect-MgGraph -AccessToken $secureToken -NoWelcome
+if ($Update) {
+    try {
+        # Update logic goes here
+        $AccessPackage = Get-MgEntitlementManagementAccessPackage -Filter "DisplayName eq '$AccessPackageName'" -ErrorAction Stop
+        Write-Host "Fetched existing Access Package for update."
+    } catch {
+        Write-Warning "Error fetching Access Package for update"
+    }
+} else {
+    try {
+        # Creation logic
+        $AccessPackage = New-MgBetaEntitlementManagementAccessPackage -BodyParameter $BodyAccessPackage -ErrorAction Stop
+        Write-Host "Created new Access Package."
+    } catch {
+        Write-Warning "Error creating Access Package"
+    }
+}
