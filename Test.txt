@@ -1,23 +1,59 @@
-$BodyAccessPackage = @{
-    catalogId   = $Catalog.Id
-    displayName = $AccessPackageName
-    description = $AccessPackageDescription
-}
+Yes, several of the functionalities you previously accessed through the Microsoft Graph Beta PowerShell cmdlets have been incorporated into the production (v1.0) Microsoft.Graph.Identity.Governance module. Here's a mapping of the beta cmdlets to their production equivalents:
 
-if ($Update) {
-    try {
-        # Update logic goes here
-        $AccessPackage = Get-MgEntitlementManagementAccessPackage -Filter "DisplayName eq '$AccessPackageName'" -ErrorAction Stop
-        Write-Host "Fetched existing Access Package for update."
-    } catch {
-        Write-Warning "Error fetching Access Package for update"
-    }
-} else {
-    try {
-        # Creation logic
-        $AccessPackage = New-MgBetaEntitlementManagementAccessPackage -BodyParameter $BodyAccessPackage -ErrorAction Stop
-        Write-Host "Created new Access Package."
-    } catch {
-        Write-Warning "Error creating Access Package"
-    }
-}
+
+---
+
+✅ Available in Production
+
+Get-MgBetaEntitlementManagementAccessPackageCatalog → Get-MgEntitlementManagementAccessPackageCatalog
+Retrieves access package catalogs. 
+
+New-MgBetaEntitlementManagementAccessPackage → New-MgEntitlementManagementAccessPackage
+Creates a new access package within an existing catalog. 
+
+Update-MgBetaEntitlementManagementAccessPackage → 
+  
+
+New-MgBetaEntitlementManagementAccessPackageAssignmentPolicy → 
+  
+
+Get-MgBetaEntitlementManagementAccessPackageAssignmentPolicy → 
+  
+
+New-MgBetaEntitlementManagementAccessPackageResourceRequest → New-MgEntitlementManagementResourceRequest
+Requests the addition, update, or removal of a resource in an access package catalog. 
+
+New-MgBetaEntitlementManagementAccessPackageResourceRoleScope → New-MgEntitlementManagementAccessPackageResourceRoleScope
+Adds a resource role to an access package. 
+
+
+
+---
+
+⚠️ Not Yet Available in Production
+
+Get-MgBetaEntitlementManagementAccessPackageCatalogAccessPackageResource
+This cmdlet retrieves resources associated with an access package catalog. As of now, there isn't a direct equivalent in the production module. 
+
+
+
+---
+
+✅ Alternative Available in Production
+
+New-MgBetaEntitlementManagementAccessPackageResourceRequest → New-MgEntitlementManagementResourceRequest
+While the beta cmdlet specifically targets access package resource requests, the production cmdlet serves a similar purpose by handling resource requests within entitlement management. 
+
+
+
+---
+
+To transition from beta to production cmdlets, ensure you have the latest version of the Microsoft.Graph.Identity.Governance module installed. You can do this by running:
+
+Install-Module -Name Microsoft.Graph.Identity.Governance -Scope CurrentUser -Force
+68
+
+This will allow you to utilize the stable, production-ready cmdlets for managing entitlement management tasks.
+
+If you need assistance updating your scripts to use these production cmdlets or have further questions, feel free to ask!
+
