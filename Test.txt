@@ -57,3 +57,5 @@ This will allow you to utilize the stable, production-ready cmdlets for managing
 
 If you need assistance updating your scripts to use these production cmdlets or have further questions, feel free to ask!
 
+$Catalogs = Get-MgEntitlementManagementAccessPackageCatalog
+$Catalog = $Catalogs | Where-Object { $_.DisplayName -eq $CatalogName }
