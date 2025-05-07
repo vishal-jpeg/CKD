@@ -1,61 +1,26 @@
-Yes, several of the functionalities you previously accessed through the Microsoft Graph Beta PowerShell cmdlets have been incorporated into the production (v1.0) Microsoft.Graph.Identity.Governance module. Here's a mapping of the beta cmdlets to their production equivalents:
+param (
+    [string]$AzureDevOpsOrgUrl,
+    [string]$ServiceAccountUsername,
+    [string]$ServiceAccountPassword,  # Consider storing this securely as a secret as well
+    [string]$KeyVaultName,
+    [string]$SecretName
+)
 
+# Connect to Azure DevOps
+$pat = ConvertTo-SecureString $ServiceAccountPassword -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential ($ServiceAccountUsername, $pat)
+Connect-AzAccount -Identity  # Runbook uses Managed Identity
 
----
+# Rotate PAT via Azure DevOps API (invoke REST call)
+$body = @{
+    displayName = "automation-pat"
+    scope       = "vso.build vso.code"
+    validTo     = (Get-Date).AddDays(30).ToString("o")
+    allOrgs     = $false
+}
+$response = Invoke-RestMethod -Method Post -Uri "$AzureDevOpsOrgUrl/_apis/tokens/pats?api-version=7.0" -Credential $cred -Body ($body | ConvertTo-Json -Depth 10) -ContentType "application/json"
 
-✅ Available in Production
+$newPat = $response.patToken
 
-Get-MgBetaEntitlementManagementAccessPackageCatalog → Get-MgEntitlementManagementAccessPackageCatalog
-Retrieves access package catalogs. 
-
-New-MgBetaEntitlementManagementAccessPackage → New-MgEntitlementManagementAccessPackage
-Creates a new access package within an existing catalog. 
-
-Update-MgBetaEntitlementManagementAccessPackage → 
-  
-
-New-MgBetaEntitlementManagementAccessPackageAssignmentPolicy → 
-  
-
-Get-MgBetaEntitlementManagementAccessPackageAssignmentPolicy → 
-  
-
-New-MgBetaEntitlementManagementAccessPackageResourceRequest → New-MgEntitlementManagementResourceRequest
-Requests the addition, update, or removal of a resource in an access package catalog. 
-
-New-MgBetaEntitlementManagementAccessPackageResourceRoleScope → New-MgEntitlementManagementAccessPackageResourceRoleScope
-Adds a resource role to an access package. 
-
-
-
----
-
-⚠️ Not Yet Available in Production
-
-Get-MgBetaEntitlementManagementAccessPackageCatalogAccessPackageResource
-This cmdlet retrieves resources associated with an access package catalog. As of now, there isn't a direct equivalent in the production module. 
-
-
-
----
-
-✅ Alternative Available in Production
-
-New-MgBetaEntitlementManagementAccessPackageResourceRequest → New-MgEntitlementManagementResourceRequest
-While the beta cmdlet specifically targets access package resource requests, the production cmdlet serves a similar purpose by handling resource requests within entitlement management. 
-
-
-
----
-
-To transition from beta to production cmdlets, ensure you have the latest version of the Microsoft.Graph.Identity.Governance module installed. You can do this by running:
-
-Install-Module -Name Microsoft.Graph.Identity.Governance -Scope CurrentUser -Force
-68
-
-This will allow you to utilize the stable, production-ready cmdlets for managing entitlement management tasks.
-
-If you need assistance updating your scripts to use these production cmdlets or have further questions, feel free to ask!
-
-$Catalogs = Get-MgEntitlementManagementAccessPackageCatalog
-$Catalog = $Catalogs | Where-Object { $_.DisplayName -eq $CatalogName }
+# Store PAT in Key Vault
+Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPat -AsPlainText -Force)
