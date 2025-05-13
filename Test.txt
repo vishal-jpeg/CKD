@@ -35,3 +35,41 @@ stages:
         ScriptPath: $(powershellFile)
         azurePowerShellVersion: latestVersion
         pwsh: false
+
+param (
+    [string]$AzureDevOpsOrgUrl,
+    [string]$ServiceAccountUsername,
+    [string]$KeyVaultName,
+    [string]$SecretName
+)
+
+# Get the Service Account Password from environment variable (injected via Azure DevOps KeyVault@2)
+$ServiceAccountPassword = $env:ServiceAccountPassword
+
+# Convert password to secure string and create PSCredential object
+$securePassword = ConvertTo-SecureString $ServiceAccountPassword -AsPlainText -Force
+$cred = New-Object System.Management.Automation.PSCredential ($ServiceAccountUsername, $securePassword)
+
+# Connect to Azure using Managed Identity (assumes Azure DevOps agent has access)
+Connect-AzAccount -Identity
+
+# Prepare body for Azure DevOps PAT creation API
+$body = @{
+    displayName = "automation-pat"
+    scope       = "vso.build vso.code"
+    validTo     = (Get-Date).AddDays(30).ToString("o")
+    allOrgs     = $false
+}
+
+# Generate new PAT
+$response = Invoke-RestMethod -Method Post -Uri "$AzureDevOpsOrgUrl/_apis/tokens/pats?api-version=7.0" `
+                              -Credential $cred `
+                              -Body ($body | ConvertTo-Json -Depth 10) `
+                              -ContentType "application/json"
+
+$newPat = $response.patToken
+
+# Store the new PAT in Azure Key Vault
+Set-AzKeyVaultSecret -VaultName $KeyVaultName `
+                     -Name $SecretName `
+                     -SecretValue (ConvertTo-SecureString $newPat -AsPlainText -Force)
