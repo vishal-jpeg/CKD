@@ -4,72 +4,29 @@ trigger:
 name: Deploy pwsh files
 
 variables:
+  - group: Secrets-VG  # This includes ServiceAccountPassword securely
   azureServiceConnection: 'ctb-ac-sc-mb-graph'
   powershellFile: './CTB/TemplateFiles/PowershellSpts/PIMAssignment.ps1'
-  keyVaultName: 'your-keyvault-name'       # Add your Key Vault name here
-  secretName: 'ServiceAccountPassword'     # Name of the secret in Key Vault
 
 pool:
   name: Merchantss
 
 stages:
-- stage: PowershellCodeExecution
-  jobs:
-  - job: PowershellCodeExecution
-    displayName: Powershell Scripts
-    steps:
-
-    # Step 1: Fetch secret from Key Vault
-    - task: AzureKeyVault@2
-      inputs:
-        azureSubscription: $(azureServiceConnection)
-        KeyVaultName: $(keyVaultName)
-        SecretsFilter: $(secretName)
-        RunAsPreJob: true
-
-    # Step 2: Execute PowerShell script using the secret
-    - task: AzurePowerShell@5
-      inputs:
-        ScriptType: 'FilePath'
-        azureSubscription: $(azureServiceConnection)
-        ScriptPath: $(powershellFile)
-        azurePowerShellVersion: latestVersion
-        pwsh: false
-
-param (
-    [string]$AzureDevOpsOrgUrl,
-    [string]$ServiceAccountUsername,
-    [string]$KeyVaultName,
-    [string]$SecretName
-)
-
-# Get the Service Account Password from environment variable (injected via Azure DevOps KeyVault@2)
-$ServiceAccountPassword = $env:ServiceAccountPassword
-
-# Convert password to secure string and create PSCredential object
-$securePassword = ConvertTo-SecureString $ServiceAccountPassword -AsPlainText -Force
-$cred = New-Object System.Management.Automation.PSCredential ($ServiceAccountUsername, $securePassword)
-
-# Connect to Azure using Managed Identity (assumes Azure DevOps agent has access)
-Connect-AzAccount -Identity
-
-# Prepare body for Azure DevOps PAT creation API
-$body = @{
-    displayName = "automation-pat"
-    scope       = "vso.build vso.code"
-    validTo     = (Get-Date).AddDays(30).ToString("o")
-    allOrgs     = $false
-}
-
-# Generate new PAT
-$response = Invoke-RestMethod -Method Post -Uri "$AzureDevOpsOrgUrl/_apis/tokens/pats?api-version=7.0" `
-                              -Credential $cred `
-                              -Body ($body | ConvertTo-Json -Depth 10) `
-                              -ContentType "application/json"
-
-$newPat = $response.patToken
-
-# Store the new PAT in Azure Key Vault
-Set-AzKeyVaultSecret -VaultName $KeyVaultName `
-                     -Name $SecretName `
-                     -SecretValue (ConvertTo-SecureString $newPat -AsPlainText -Force)
+  - stage: PowershellCodeExecution
+    jobs:
+      - job: PowershellCodeExecution
+        displayName: Powershell Scripts
+        steps:
+          - task: AzurePowerShell@5
+            inputs:
+              ScriptType: 'FilePath'
+              azureSubscription: $(azureServiceConnection)
+              ScriptPath: $(powershellFile)
+              ScriptArguments: >
+                -AzureDevOpsOrgUrl "https://dev.azure.com/YOUR_ORG"
+                -ServiceAccountUsername "your-user@domain.com"
+                -ServiceAccountPassword "$(ServiceAccountPassword)"
+                -KeyVaultName "your-kv-name"
+                -SecretName "your-secret-name"
+              azurePowerShellVersion: 'latestVersion'
+              pwsh: false  # Set to true if your script uses PowerShell Core (pwsh)
