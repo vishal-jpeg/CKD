@@ -1,32 +1,15 @@
-trigger:
-  none
+# Variables
+$resourceGroupName = "your-resource-group"
+$vaultName = "your-vault-name"
 
-name: Deploy pwsh files
+# Get the vault
+$vault = Get-AzRecoveryServicesVault -Name $vaultName -ResourceGroupName $resourceGroupName
 
-variables:
-  - group: Secrets-VG  # This includes ServiceAccountPassword securely
-  azureServiceConnection: 'ctb-ac-sc-mb-graph'
-  powershellFile: './CTB/TemplateFiles/PowershellSpts/PIMAssignment.ps1'
+# Set the vault context
+Set-AzRecoveryServicesVaultContext -Vault $vault
 
-pool:
-  name: Merchantss
+# Update the redundancy setting to Locally Redundant
+Set-AzRecoveryServicesBackupProperty -BackupStorageRedundancy Local
 
-stages:
-  - stage: PowershellCodeExecution
-    jobs:
-      - job: PowershellCodeExecution
-        displayName: Powershell Scripts
-        steps:
-          - task: AzurePowerShell@5
-            inputs:
-              ScriptType: 'FilePath'
-              azureSubscription: $(azureServiceConnection)
-              ScriptPath: $(powershellFile)
-              ScriptArguments: >
-                -AzureDevOpsOrgUrl "https://dev.azure.com/YOUR_ORG"
-                -ServiceAccountUsername "your-user@domain.com"
-                -ServiceAccountPassword "$(ServiceAccountPassword)"
-                -KeyVaultName "your-kv-name"
-                -SecretName "your-secret-name"
-              azurePowerShellVersion: 'latestVersion'
-              pwsh: false  # Set to true if your script uses PowerShell Core (pwsh)
+# Optional: Verify the setting
+(Get-AzRecoveryServicesBackupProperty).BackupStorageRedundancy
