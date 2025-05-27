@@ -1,208 +1,65 @@
-
-Here’s a secure and automated Azure DevOps PAT rotation process using a user account (service account) and Azure Key Vault, designed for isolation, least privilege, and automation. We'll use an Azure Automation Runbook as the execution engine, since it allows managed identity usage, secure execution, and scheduling.
-
-
----
-
-PAT Rotation High-Level Flow
-
-1. Service Account (user in Entra ID) creates a PAT via Azure DevOps REST API.
-
-
-2. Azure Automation Runbook is used to:
-
-Authenticate as the service account (via username/password or MSAL confidential client).
-
-Generate/rotate the PAT.
-
-Store it in an isolated Key Vault.
-
-
-
-3. Key Vault is tightly locked down:
-
-Only the Runbook’s Managed Identity has access.
-
-PIM roles are cleaned up or eliminated.
-
-
-
-
-
----
-
-Step-by-Step Setup
-
-
----
-
-1. Prepare the Entra ID User (Service Account)
-
-Create a user account in Entra ID (e.g., svc-devops-pat@contoso.com).
-
-Give it access to the required Azure DevOps organization (Project Reader or Contributor).
-
-Enable Azure AD Conditional Access if needed for MFA exceptions.
-
-Set a non-expiring password or manage it via Key Vault.
-
-
-
----
-
-2. Prepare the Azure Key Vault (Isolated)
-
-Create a new Key Vault (e.g., kv-pat-prod).
-
-Assign only the Azure Automation Runbook's System Assigned Managed Identity access to:
-
-set, get, and delete secrets.
-
-
-Remove all PIM assignments or limit them to break-glass accounts.
-
-
-
----
-
-3. Azure Automation Setup
-
-1. Create a new Automation Account (e.g., aa-pat-rotate) with:
-
-System Assigned Managed Identity enabled.
-
-Azure Runbook (PowerShell) support.
-
-
-
-2. Grant this Managed Identity:
-
-Key Vault Secret Permissions on kv-pat-prod.
-
-(Optional) Azure DevOps REST API permissions via OAuth or PAT.
-
-
-
-3. Add required modules:
-
-Az.Accounts
-
-Az.KeyVault
-
-MSAL.PS (for modern authentication to Azure DevOps)
-
-
-
-
-
----
-
-4. PowerShell Runbook Script
-
-Here’s a sample runbook script:
-
 param (
-    [string] $Username = "svc-devops-pat@contoso.com",
-    [string] $PasswordSecretName = "svc-devops-password",
-    [string] $KeyVaultName = "kv-pat-prod",
-    [string] $OrganizationUrl = "https://dev.azure.com/yourorg"
+    [string]$AzureDevOpsOrgUrl = "https://dev.azure.com/your-org",  # <-- Update your org URL
+    [string]$ServiceAccountUsername = "your-service-account@domain.com",  # <-- Update this
+    [string]$KeyVaultName = "your-keyvault-name",  # <-- Update this
+    [string]$SecretName = "PATRotation"  # <-- This is the name of the secret in Key Vault
 )
 
-# Login to Key Vault
-$secret = Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $PasswordSecretName
-$Password = $secret.SecretValueText
+# Retrieve encrypted password stored in Azure Automation variable
+$ServiceAccountPassword = Get-AutomationVariable -Name "PATUserPassword"
 
-# Authenticate to Azure DevOps via MSAL
-$ClientId = "<AzureAppClientId>"
-$TenantId = "<YourTenantId>"
-$Scopes = "$OrganizationUrl/.default"
+if (-not $ServiceAccountPassword) {
+    throw "Service account password is missing or variable is not accessible."
+}
 
-$AuthResult = Get-MsalToken -ClientId $ClientId -TenantId $TenantId -Username $Username -Password (ConvertTo-SecureString $Password -AsPlainText -Force) -Scopes $Scopes
+# Authenticate to Azure using the Runbook's Managed Identity
+Connect-AzAccount -Identity
+Write-Output "Authenticated to Azure using Managed Identity."
 
-$Token = $AuthResult.AccessToken
+# Prepare PAT creation request body
+$body = @{
+    displayName = "automation-pat"
+    scope       = "vso.build vso.code"  # <-- Adjust scopes as needed
+    validTo     = (Get-Date).AddDays(30).ToString("o")
+    allOrgs     = $false
+}
 
-# Generate new PAT
-$Body = @{
-    displayName = "Automated PAT"
-    scope = "vso.code vso.build"
-    validTo = (Get-Date).AddDays(30).ToString("o")
-    targetAccounts = @()
-    allOrgs = $false
-} | ConvertTo-Json -Depth 3
+# Encode credentials to base64 for Basic Authentication
+$pair = "$ServiceAccountUsername:$ServiceAccountPassword"
+$encodedAuth = [Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($pair))
 
+# Prepare headers
 $headers = @{
-    "Authorization" = "Bearer $Token"
+    Authorization = "Basic $encodedAuth"
     "Content-Type" = "application/json"
 }
 
-$response = Invoke-RestMethod -Uri "$OrganizationUrl/_apis/tokens/pats?api-version=7.1-preview" -Method Post -Body $Body -Headers $headers
+# Call Azure DevOps REST API to create a PAT
+try {
+    Write-Output "Calling Azure DevOps API to generate PAT..."
+    $response = Invoke-RestMethod -Method Post `
+        -Uri "$AzureDevOpsOrgUrl/_apis/tokens/pats?api-version=7.0" `
+        -Headers $headers `
+        -Body ($body | ConvertTo-Json -Depth 10)
 
-# Save PAT to Key Vault
-Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name "devops-pat-token" -SecretValue (ConvertTo-SecureString $response.patToken -AsPlainText -Force)
+    $newPat = $response.patToken
+    if (-not $newPat) {
+        throw "PAT was not generated. Response did not contain 'patToken'."
+    }
 
+    Write-Output "New PAT generated successfully."
 
----
+} catch {
+    throw "Failed to generate PAT via API. Error: $($_.Exception.Message)"
+}
 
-5. Schedule the Runbook
-
-In the Automation Account, set a recurring schedule (e.g., every 25 days).
-
-Attach the schedule to the runbook.
-
-
-
----
-
-6. Secure Everything
-
-Key Vault:
-
-Remove all RBAC/PIM except the Automation Account.
-
-
-Service Account:
-
-Do not use it interactively.
-
-Rotate its password via another runbook if needed.
-
-
-Logging:
-
-Enable diagnostic logs for Key Vault and Automation Account.
-
-
-
-
----
-
-Optional Enhancements
-
-Use Azure App Registration (with secret or cert) for client credentials flow instead of username/password.
-
-Use Logic App to monitor PAT expiry and trigger rotation.
-
-Store audit logs in Log Analytics.
-
-
-
----
-
-One-Time Setup Script & Execution
-
-Once everything is configured, you only need to run the automation runbook, or schedule it. No manual PAT generation is needed anymore.
-
-
----
-
-Would you like me to generate:
-
-A downloadable .ps1 file for the runbook?
-
-Terraform/Bicep to automate creation of Key Vault, Automation Account, and access policies?
-
-Optional Logic App to monitor expiry?
-
-
-Let me know what you'd like.
-
+# Store the PAT securely in Azure Key Vault
+try {
+    Write-Output "Storing new PAT in Azure Key Vault..."
+    Set-AzKeyVaultSecret -VaultName $KeyVaultName `
+        -Name $SecretName `
+        -SecretValue (ConvertTo-SecureString $newPat -AsPlainText -Force)
+    Write-Output "PAT stored successfully in Key Vault under secret name: $SecretName"
+} catch {
+    throw "Failed to store PAT in Key Vault. Error: $($_.Exception.Message)"
+}
