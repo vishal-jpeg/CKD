@@ -41,3 +41,53 @@ $response = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $pa
 # ========== Output the PAT ==========
 $newPAT = $response.patToken
 Write-Output "✅ New PAT created: $newPAT"
+
+Here's a professional and clear message you can send to your manager to explain the situation and ask for the required direction:
+
+
+---
+
+Subject: Clarification Needed on Authentication Method for Azure DevOps PAT Rotation
+
+Hi [Manager's Name],
+
+As part of our current approach to automate Azure DevOps PAT (Personal Access Token) rotation, we initially attempted to use a user account to authenticate and generate the PAT via PowerShell. However, the user account is currently enforced with MFA (Multi-Factor Authentication), which blocks non-interactive automation flows like runbooks.
+
+To proceed securely and in line with best practices, we have two potential options:
+
+1. Continue using the user account
+
+This would require disabling MFA for that specific service account to allow automation.
+
+Less secure and not recommended long-term due to compliance and identity protection concerns.
+
+
+
+2. Use Microsoft Entra ID access tokens (Recommended)
+
+We register an app in Entra ID, assign the required API permissions (e.g., user_impersonation for Azure DevOps), and use a client secret to authenticate.
+
+This approach is more secure, supports automation natively, and doesn't rely on user credentials or MFA.
+
+
+
+
+Question:
+Would you prefer:
+
+Temporarily disabling MFA for the service account to continue the current method,
+OR
+
+Proceeding with setting up a proper service principal (app registration) and granting necessary API permissions to securely manage the PAT lifecycle using Entra ID tokens?
+
+
+Please let me know how you'd like to proceed so I can continue with the appropriate setup.
+
+Thanks,
+[Your Name]
+
+
+---
+
+Let me know if you'd like a version tailored to your company’s tone or for sending on Teams/Slack instead of email.
+
