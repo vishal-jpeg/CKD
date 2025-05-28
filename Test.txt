@@ -1,92 +1,43 @@
-trigger: none
+# ========== CONFIG ==========
+$clientId     = "<YOUR-CLIENT-ID>"
+$tenantId     = "<YOUR-TENANT-ID>"
+$clientSecret = "<YOUR-CLIENT-SECRET>"
+$organization = "<YOUR-AZDO-ORG-NAME>"         # e.g., 'contoso'
+$userId       = "<ENTRA-ID-USER-ID>"           # Object ID or descriptor of the target user
+$scopes       = "vso.code vso.build"           # Customize based on what the PAT needs
 
-name: Deploy Bicep files with Master Param File
+# ========== Acquire Access Token ==========
+$tokenEndpoint = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
+$tokenBody = @{
+    grant_type    = "client_credentials"
+    client_id     = $clientId
+    client_secret = $clientSecret
+    scope         = "499b84ac-1321-427f-aa17-267ca6975798/.default"
+}
 
-parameters:
-  - name: runvalidation
-    displayName: "Run Validation and Scan"
-    type: boolean
-    default: true
+$tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $tokenBody
+$accessToken = $tokenResponse.access_token
 
-  - name: templateFileDirectory
-    displayName: "Template File Directory"
-    type: string
-    default: ./CTB/TemplateFiles
+Write-Output "✅ Access token acquired."
 
-variables:
-  azureServiceConnection: 'ctb-ac-sb-connect'
-  location: 'canadacentral'
-  templateFile: './CTB/canada_central/common_services/common/Connect/Sandbox/firewallPolicy.bicep'
-  parameterFile: './CTB/canada_central/common_services/common/Connect/Sandbox/master.bicepparam'
+# ========== Prepare PAT Request Body ==========
+$patRequestBody = @{
+    displayName = "automation-pat-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+    scope       = $scopes
+    validTo     = (Get-Date).AddDays(30).ToString("o")
+    targetAccounts = @("$userId")  # Required field for PAT creation
+} | ConvertTo-Json -Depth 10
 
-pool:
-  name: Merchantss
+# ========== Call PAT Creation API ==========
+$headers = @{
+    Authorization = "Bearer $accessToken"
+    "Content-Type" = "application/json"
+}
 
-stages:
-  - stage: Lint
-    displayName: Validate Bicep
-    jobs:
-      - job: LintCode
-        displayName: Lint and Validate
-        condition: and(succeeded(), eq('${{ parameters.runvalidation }}', true))
-        steps:
-          - task: AzureCLI@2
-            displayName: Run Bicep Build
-            inputs:
-              azureSubscription: $(azureServiceConnection)
-              scriptType: bash
-              scriptLocation: inlineScript
-              inlineScript: |
-                mkdir -p ${{ parameters.templateFileDirectory }}/JsonFilesForScan
-                az bicep build --file $(templateFile) --outdir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
+$uri = "https://vssps.dev.azure.com/$organization/_apis/tokens/pats?api-version=7.1-preview.1"
 
-          - task: AzureCLI@2
-            displayName: Preflight Validation
-            inputs:
-              azureSubscription: $(azureServiceConnection)
-              scriptType: bash
-              scriptLocation: inlineScript
-              inlineScript: |
-                az deployment sub validate \
-                  --subscription 35909696-9868-4f63-b66b-d3178b513770 \
-                  --location $(location) \
-                  --template-file $(templateFile) \
-                  --parameters @$(parameterFile)
+$response = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $patRequestBody
 
-          - task: AzureCLI@2
-            displayName: What-if Preview
-            inputs:
-              azureSubscription: $(azureServiceConnection)
-              scriptType: bash
-              scriptLocation: inlineScript
-              inlineScript: |
-                az deployment sub what-if \
-                  --subscription 35909696-9868-4f63-b66b-d3178b513770 \
-                  --location $(location) \
-                  --template-file $(templateFile) \
-                  --parameters @$(parameterFile)
-
-  - stage: Deploy
-    displayName: Deploy Stage
-    jobs:
-      - deployment: DeployResource
-        displayName: Deploy Resource
-        environment: ctb-ac-env-sb-01
-        strategy:
-          runOnce:
-            deploy:
-              steps:
-                - checkout: self
-
-                - task: AzureCLI@2
-                  displayName: Deploy Bicep File
-                  inputs:
-                    azureSubscription: $(azureServiceConnection)
-                    scriptType: bash
-                    scriptLocation: inlineScript
-                    inlineScript: |
-                      az deployment sub create \
-                        --subscription 35909696-9868-4f63-b66b-d3178b513770 \
-                        --location $(location) \
-                        --template-file $(templateFile) \
-                        --parameters @$(parameterFile)
+# ========== Output the PAT ==========
+$newPAT = $response.patToken
+Write-Output "✅ New PAT created: $newPAT"
