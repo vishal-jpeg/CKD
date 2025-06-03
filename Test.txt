@@ -1,49 +1,38 @@
-# Parameters - update these in Automation Account or pass at runtime
 param (
-    [string]$AzureDevOpsOrgUrl = "https://dev.azure.com/your-org",
-    [string]$KeyVaultName = "your-keyvault-name",
-    [string]$SecretName = "PAT-Token",
-    [string]$ServiceAccountUPN = "your-serviceaccount@domain.com"
+  [string]$AzureDevOpsOrgUrl = "https://dev.azure.com/cantirebank",
+  [string]$KeyVaultName = "ctb-ac-sb-co-kv-pat-01",
+  [string]$SecretName = "AutomationPAT-token",
+  [string]$ServiceAccountUPN = "JaishnuTestUser@ctbank.ctfs.com"
 )
 
-# Authenticate to Azure using Managed Identity
-Write-Output "Authenticating to Azure using Managed Identity..."
-Connect-AzAccount -Identity
+# Use MSAL token (delegated user token from App Registration)
+$accessToken = "<YOUR_ENTRA_ACCESS_TOKEN>"
 
-# Get current PAT from Azure Key Vault
-Write-Output "Fetching current PAT from Key Vault..."
-$currentPAT = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName).SecretValueText
-
-# Prepare Auth Header
-$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$currentPAT"))
-$headers = @{ Authorization = ("Basic {0}" -f $base64AuthInfo) }
-
-# Build PAT request body
-Write-Output "Building request for new PAT..."
-$body = @{
-    displayName = "Auto-Rotated-PAT"
-    scope = "vso.build vso.code"
-    validTo = (Get-Date).AddDays(30).ToString("o")
-    allOrgs = $false
-    targetAccounts = @()
-    onlyWithinCurrentAccount = $true
-    isPublic = $false
-    userId = ""
-    userPrincipalName = $ServiceAccountUPN
-} | ConvertTo-Json -Depth 10
-
-# Make the REST API call to rotate PAT
-Write-Output "Calling Azure DevOps API to generate new PAT..."
-$response = Invoke-RestMethod -Method Post -Uri "$AzureDevOpsOrgUrl/_apis/tokens/pats?api-version=7.1-preview.1" -Headers $headers -Body $body -ContentType "application/json"
-
-$newPat = $response.patToken
-
-if (-not $newPat) {
-    throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
+$headers = @{
+  Authorization = "Bearer $accessToken"
+  "Content-Type" = "application/json"
 }
 
-# Store the new PAT in Key Vault
-Write-Output "Storing new PAT in Key Vault..."
+$body = @{
+  displayName = "Auto-Rotated-PAT"
+  scope = "vso.work_write vso.code_write"
+  validTo = (Get-Date).AddDays(30).ToString("o")
+  allOrgs = $false
+  onlyWithinCurrentAccount = $true
+  isPublic = $false
+  userPrincipalName = $ServiceAccountUPN
+} | ConvertTo-Json -Depth 10
+
+$apiurl = "https://vssps.dev.azure.com/cantirebank/_apis/tokens/pats?api-version=7.1-preview.1"
+
+$response = Invoke-RestMethod -Method Post -Uri $apiurl -Headers $headers -Body $body
+
+$newPat = $response.patToken.token
+
+if (-not $newPat) {
+  throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
+}
+
 Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPat -AsPlainText -Force)
 
 Write-Output "PAT rotation completed successfully."
