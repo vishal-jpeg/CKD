@@ -1,93 +1,34 @@
-# ========== CONFIG ==========
-$clientId     = "<YOUR-CLIENT-ID>"
-$tenantId     = "<YOUR-TENANT-ID>"
-$clientSecret = "<YOUR-CLIENT-SECRET>"
-$organization = "<YOUR-AZDO-ORG-NAME>"         # e.g., 'contoso'
-$userId       = "<ENTRA-ID-USER-ID>"           # Object ID or descriptor of the target user
-$scopes       = "vso.code vso.build"           # Customize based on what the PAT needs
+Parameters - update these in Automation Account or pass at runtime
 
-# ========== Acquire Access Token ==========
-$tokenEndpoint = "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token"
-$tokenBody = @{
-    grant_type    = "client_credentials"
-    client_id     = $clientId
-    client_secret = $clientSecret
-    scope         = "499b84ac-1321-427f-aa17-267ca6975798/.default"
-}
+param ( [string]$AzureDevOpsOrgUrl = "https://dev.azure.com/your-org", [string]$KeyVaultName = "your-keyvault-name", [string]$SecretName = "PAT-Token", [string]$ServiceAccountUPN = "your-serviceaccount@domain.com" )
 
-$tokenResponse = Invoke-RestMethod -Method Post -Uri $tokenEndpoint -Body $tokenBody
-$accessToken = $tokenResponse.access_token
+Authenticate to Azure using Managed Identity
 
-Write-Output "✅ Access token acquired."
+Write-Output "Authenticating to Azure using Managed Identity..." Connect-AzAccount -Identity
 
-# ========== Prepare PAT Request Body ==========
-$patRequestBody = @{
-    displayName = "automation-pat-$(Get-Date -Format 'yyyyMMdd-HHmm')"
-    scope       = $scopes
-    validTo     = (Get-Date).AddDays(30).ToString("o")
-    targetAccounts = @("$userId")  # Required field for PAT creation
-} | ConvertTo-Json -Depth 10
+Get current PAT from Azure Key Vault
 
-# ========== Call PAT Creation API ==========
-$headers = @{
-    Authorization = "Bearer $accessToken"
-    "Content-Type" = "application/json"
-}
+Write-Output "Fetching current PAT from Key Vault..." $currentPAT = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName).SecretValueText
 
-$uri = "https://vssps.dev.azure.com/$organization/_apis/tokens/pats?api-version=7.1-preview.1"
+Prepare Auth Header
 
-$response = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $patRequestBody
+$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("":$currentPAT")) $headers = @{ Authorization = ("Basic {0}" -f $base64AuthInfo) }
 
-# ========== Output the PAT ==========
-$newPAT = $response.patToken
-Write-Output "✅ New PAT created: $newPAT"
+Build PAT request body
 
-Here's a professional and clear message you can send to your manager to explain the situation and ask for the required direction:
+Write-Output "Building request for new PAT..." $body = { displayName = "Auto-Rotated-PAT" scope       = "vso.build vso.code" validTo     = (Get-Date).AddDays(30).ToString("o") allOrgs     = $false targetAccounts = @() onlyWithinCurrentAccount = $true isPublic = $false userId = "" userPrincipalName = $ServiceAccountUPN } | ConvertTo-Json -Depth 10
 
+Make the REST API call to rotate PAT
 
----
+Write-Output "Calling Azure DevOps API to generate new PAT..." $response = Invoke-RestMethod -Method Post -Uri "$AzureDevOpsOrgUrl/_apis/tokens/pats?api-version=7.1-preview.1" -Headers $headers -Body $body -ContentType "application/json"
 
-Subject: Clarification Needed on Authentication Method for Azure DevOps PAT Rotation
+$newPat = $response.patToken
 
-Hi [Manager's Name],
+if (-not $newPat) { throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)" }
 
-As part of our current approach to automate Azure DevOps PAT (Personal Access Token) rotation, we initially attempted to use a user account to authenticate and generate the PAT via PowerShell. However, the user account is currently enforced with MFA (Multi-Factor Authentication), which blocks non-interactive automation flows like runbooks.
+Store the new PAT in Key Vault
 
-To proceed securely and in line with best practices, we have two potential options:
+Write-Output "Storing new PAT in Key Vault..." Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPat -AsPlainText -Force)
 
-1. Continue using the user account
-
-This would require disabling MFA for that specific service account to allow automation.
-
-Less secure and not recommended long-term due to compliance and identity protection concerns.
-
-
-
-2. Use Microsoft Entra ID access tokens (Recommended)
-
-We register an app in Entra ID, assign the required API permissions (e.g., user_impersonation for Azure DevOps), and use a client secret to authenticate.
-
-This approach is more secure, supports automation natively, and doesn't rely on user credentials or MFA.
-
-
-
-
-Question:
-Would you prefer:
-
-Temporarily disabling MFA for the service account to continue the current method,
-OR
-
-Proceeding with setting up a proper service principal (app registration) and granting necessary API permissions to securely manage the PAT lifecycle using Entra ID tokens?
-
-
-Please let me know how you'd like to proceed so I can continue with the appropriate setup.
-
-Thanks,
-[Your Name]
-
-
----
-
-Let me know if you'd like a version tailored to your company’s tone or for sending on Teams/Slack instead of email.
+Write-Output "PAT rotation completed successfully."
 
