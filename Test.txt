@@ -1,38 +1,44 @@
 param (
-  [string]$AzureDevOpsOrgUrl = "https://dev.azure.com/cantirebank",
-  [string]$KeyVaultName = "ctb-ac-sb-co-kv-pat-01",
-  [string]$SecretName = "AutomationPAT-token",
-  [string]$ServiceAccountUPN = "JaishnuTestUser@ctbank.ctfs.com"
+    [string]$Organization = "cantirebank",
+    [string]$KeyVaultName = "ctb-ac-sb-co-kv-pat-01",
+    [string]$SecretName = "AutomationPAT-token"
 )
 
-# Use MSAL token (delegated user token from App Registration)
-$accessToken = "<YOUR_ENTRA_ACCESS_TOKEN>"
+# Authenticate with Azure using the Automation Account's Managed Identity
+Write-Output "Authenticating to Azure using Managed Identity..."
+Connect-AzAccount -Identity
 
+# Retrieve current PAT from Key Vault
+Write-Output "Fetching current PAT from Key Vault..."
+$currentPAT = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName).SecretValueText
+
+# Prepare Authorization header
 $headers = @{
-  Authorization = "Bearer $accessToken"
-  "Content-Type" = "application/json"
+    Authorization = ("Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$currentPAT")))
+    "Content-Type" = "application/json"
 }
 
+# Define new PAT metadata
 $body = @{
-  displayName = "Auto-Rotated-PAT"
-  scope = "vso.work_write vso.code_write"
-  validTo = (Get-Date).AddDays(30).ToString("o")
-  allOrgs = $false
-  onlyWithinCurrentAccount = $true
-  isPublic = $false
-  userPrincipalName = $ServiceAccountUPN
+    displayName = "Auto-Rotated-PAT"
+    scope       = "vso.code vso.build"
+    validTo     = (Get-Date).AddDays(30).ToString("o")
+    allOrgs     = $false
 } | ConvertTo-Json -Depth 10
 
-$apiurl = "https://vssps.dev.azure.com/cantirebank/_apis/tokens/pats?api-version=7.1-preview.1"
+# Call Azure DevOps REST API to create a new PAT
+Write-Output "Calling Azure DevOps API to generate new PAT..."
+$response = Invoke-RestMethod -Uri "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1" `
+    -Method Post -Headers $headers -Body $body
 
-$response = Invoke-RestMethod -Method Post -Uri $apiurl -Headers $headers -Body $body
+$newPAT = $response.patToken
 
-$newPat = $response.patToken.token
-
-if (-not $newPat) {
-  throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
+if (-not $newPAT) {
+    throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
 }
 
-Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPat -AsPlainText -Force)
+# Store new PAT in Key Vault
+Write-Output "Storing new PAT in Key Vault..."
+Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPAT -AsPlainText -Force)
 
 Write-Output "PAT rotation completed successfully."
