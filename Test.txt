@@ -1,44 +1,40 @@
 param (
-    [string]$Organization = "cantirebank",
-    [string]$KeyVaultName = "ctb-ac-sb-co-kv-pat-01",
+    [string]$Username = "YourUser@domain.com",
+    [string]$Password = "YourPassword",
+    [string]$Organization = "yourorg",  # NOT the full URL
+    [string]$KeyVaultName = "your-kv-name",
     [string]$SecretName = "AutomationPAT-token"
 )
 
-# Authenticate with Azure using the Automation Account's Managed Identity
-Write-Output "Authenticating to Azure using Managed Identity..."
-Connect-AzAccount -Identity
-
-# Retrieve current PAT from Key Vault
-Write-Output "Fetching current PAT from Key Vault..."
-$currentPAT = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName).SecretValueText
-
-# Prepare Authorization header
+# Convert username and password to base64 basic auth string
+$authString = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$Username:$Password"))
 $headers = @{
-    Authorization = ("Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$currentPAT")))
+    Authorization = "Basic $authString"
     "Content-Type" = "application/json"
 }
 
-# Define new PAT metadata
+# Prepare new PAT body
 $body = @{
     displayName = "Auto-Rotated-PAT"
-    scope       = "vso.code vso.build"
+    scope       = "vso.code vso.build vso.tokens"
     validTo     = (Get-Date).AddDays(30).ToString("o")
     allOrgs     = $false
 } | ConvertTo-Json -Depth 10
 
-# Call Azure DevOps REST API to create a new PAT
-Write-Output "Calling Azure DevOps API to generate new PAT..."
-$response = Invoke-RestMethod -Uri "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1" `
-    -Method Post -Headers $headers -Body $body
+# Call the Azure DevOps PAT Lifecycle API
+$uri = "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1"
+$response = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body
 
 $newPAT = $response.patToken
 
 if (-not $newPAT) {
-    throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
+    throw "PAT creation failed: $($response | ConvertTo-Json -Depth 5)"
 }
 
-# Store new PAT in Key Vault
-Write-Output "Storing new PAT in Key Vault..."
+# Login to Azure with Managed Identity to store in Key Vault
+Connect-AzAccount -Identity
+
+# Store new PAT
 Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPAT -AsPlainText -Force)
 
-Write-Output "PAT rotation completed successfully."
+Write-Output "✅ PAT rotation successful and stored in Key Vault"
