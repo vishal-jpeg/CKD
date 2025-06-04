@@ -1,49 +1,56 @@
 param (
-    [string]$KeyVaultName = "your-keyvault-name",
-    [string]$UsernameSecret = "devops-username",
-    [string]$PasswordSecret = "devops-password",
-    [string]$OutputPatSecret = "devops-pat-token",
-    [string]$Organization = "yourorganization"  # just the org name, not full URL
+    [string]$Organization = "yourOrgName",  # e.g. cantirebank
+    [string]$KeyVaultName = "yourKeyVaultName",  # e.g. ctb-ac-sb-co-kv-pat-01
+    [string]$SecretName = "AutomationPAT-token", # Name of the secret in Key Vault
+    [string]$Username,  # Azure DevOps username (e.g. user@domain.com)
+    [string]$Password   # Azure DevOps password
 )
 
-# Step 1: Authenticate to Azure
-Write-Output "Authenticating to Azure using Managed Identity..."
-Connect-AzAccount -Identity
-
-# Step 2: Fetch credentials from Key Vault
-Write-Output "Retrieving credentials from Key Vault..."
-$Username = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $UsernameSecret).SecretValueText
-$Password = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $PasswordSecret).SecretValueText
-Write-Output "Successfully retrieved credentials."
-
-# Step 3: Prepare Authorization Header (Basic Auth using username:password)
-$basicAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("$Username:$Password"))
+# Construct basic auth header
+$basicAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${Username}:${Password}"))
 $headers = @{
     Authorization = "Basic $basicAuth"
     "Content-Type" = "application/json"
 }
 
-# Step 4: Prepare PAT metadata
+# Verify credentials by calling Profile API
+try {
+    Write-Output "Verifying credentials..."
+    $verifyResponse = Invoke-RestMethod -Uri "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1-preview.1" `
+        -Headers $headers -Method Get
+
+    Write-Output "✅ Credentials verified for user: $($verifyResponse.displayName) <$($verifyResponse.emailAddress)>"
+}
+catch {
+    Write-Error "❌ Credential verification failed: $($_.Exception.Message)"
+    throw "Invalid credentials. Please verify username and password."
+}
+
+# Prepare new PAT creation request body
 $body = @{
     displayName = "Auto-Rotated-PAT"
-    scope       = "vso.code vso.build vso.tokens"
+    scope       = "vso.code vso.build"
     validTo     = (Get-Date).AddDays(30).ToString("o")
     allOrgs     = $false
 } | ConvertTo-Json -Depth 10
 
-# Step 5: Call Azure DevOps REST API to create new PAT
-$uri = "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1"
-Write-Output "Calling Azure DevOps API to generate new PAT..."
-$response = Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $body
+# Call Azure DevOps API to create new PAT
+Write-Output "Creating new PAT..."
+$response = Invoke-RestMethod -Uri "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1" `
+    -Method Post -Headers $headers -Body $body
 
 $newPAT = $response.patToken
 
 if (-not $newPAT) {
-    throw "❌ Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
+    throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
 }
 
-# Step 6: Store new PAT in Key Vault
-Write-Output "Storing new PAT in Key Vault..."
-Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $OutputPatSecret -SecretValue (ConvertTo-SecureString $newPAT -AsPlainText -Force)
+# Authenticate to Azure (Managed Identity or login) to update Key Vault secret
+Write-Output "Authenticating to Azure to update Key Vault secret..."
+Connect-AzAccount -Identity
+
+# Store new PAT in Azure Key Vault
+Write-Output "Storing new PAT in Key Vault: $KeyVaultName secret name: $SecretName"
+Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPAT -AsPlainText -Force)
 
 Write-Output "✅ PAT rotation completed successfully."
