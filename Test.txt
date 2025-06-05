@@ -36,21 +36,41 @@ $body = @{
 
 # Call Azure DevOps API to create new PAT
 Write-Output "Creating new PAT..."
-$response = Invoke-RestMethod -Uri "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1" `
-    -Method Post -Headers $headers -Body $body
+try {
+    $response = Invoke-RestMethod -Uri "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1" `
+        -Method Post -Headers $headers -Body $body -ErrorAction Stop
 
-$newPAT = $response.patToken
-
-if (-not $newPAT) {
-    throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
+    # CORRECTED: PAT token is in response.patToken.token property
+    $newPAT = $response.patToken.token
+    
+    if (-not $newPAT) {
+        throw "PAT token not found in response: $($response | ConvertTo-Json -Depth 5)"
+    }
+}
+catch {
+    $errorMessage = "PAT creation failed: $($_.Exception.Message)"
+    if ($_.ErrorDetails.Message) {
+        $errorMessage += " | Details: $($_.ErrorDetails.Message)"
+    }
+    throw $errorMessage
 }
 
 # Authenticate to Azure (Managed Identity or login) to update Key Vault secret
-Write-Output "Authenticating to Azure to update Key Vault secret..."
-Connect-AzAccount -Identity
+try {
+    Write-Output "Authenticating to Azure to update Key Vault secret..."
+    Connect-AzAccount -Identity -ErrorAction Stop
+}
+catch {
+    throw "Azure authentication failed: $($_.Exception.Message)"
+}
 
 # Store new PAT in Azure Key Vault
-Write-Output "Storing new PAT in Key Vault: $KeyVaultName secret name: $SecretName"
-Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPAT -AsPlainText -Force)
-
-Write-Output "✅ PAT rotation completed successfully."
+try {
+    Write-Output "Storing new PAT in Key Vault: $KeyVaultName secret name: $SecretName"
+    $secretValue = ConvertTo-SecureString $newPAT -AsPlainText -Force
+    Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue $secretValue -ErrorAction Stop
+    Write-Output "✅ PAT rotation completed successfully."
+}
+catch {
+    throw "Key Vault update failed: $($_.Exception.Message)"
+}
