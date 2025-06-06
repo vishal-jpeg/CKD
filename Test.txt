@@ -1,32 +1,25 @@
 param (
-    [string]$Organization = "yourOrgName",  # e.g. cantirebank
-    [string]$KeyVaultName = "yourKeyVaultName",  # e.g. ctb-ac-sb-co-kv-pat-01
-    [string]$SecretName = "AutomationPAT-token", # Name of the secret in Key Vault
-    [string]$Username,  # Azure DevOps username (e.g. user@domain.com)
-    [string]$Password   # Azure DevOps password
+    [string]$Organization = "cantirebank",
+    [string]$KeyVaultName = "ctb-ac-sb-co-kv-pat-01",
+    [string]$SecretName = "AutomationPAT-token"
 )
 
-# Construct basic auth header
-$basicAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${Username}:${Password}"))
+# Authenticate to Azure using Managed Identity
+Write-Output "Authenticating to Azure using Managed Identity..."
+Connect-AzAccount -Identity
+
+# Retrieve current PAT from Key Vault
+Write-Output "Fetching current PAT from Key Vault..."
+$currentPAT = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName).SecretValueText
+Write-Output "Successfully fetched current PAT from Key Vault."
+
+# Build authorization header using PAT
 $headers = @{
-    Authorization = "Basic $basicAuth"
+    Authorization = ("Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$currentPAT")))
     "Content-Type" = "application/json"
 }
 
-# Verify credentials by calling Profile API
-try {
-    Write-Output "Verifying credentials..."
-    $verifyResponse = Invoke-RestMethod -Uri "https://app.vssps.visualstudio.com/_apis/profile/profiles/me?api-version=7.1-preview.1" `
-        -Headers $headers -Method Get
-
-    Write-Output "✅ Credentials verified for user: $($verifyResponse.displayName) <$($verifyResponse.emailAddress)>"
-}
-catch {
-    Write-Error "❌ Credential verification failed: $($_.Exception.Message)"
-    throw "Invalid credentials. Please verify username and password."
-}
-
-# Prepare new PAT creation request body
+# Build PAT creation payload
 $body = @{
     displayName = "Auto-Rotated-PAT"
     scope       = "vso.code vso.build"
@@ -34,43 +27,19 @@ $body = @{
     allOrgs     = $false
 } | ConvertTo-Json -Depth 10
 
-# Call Azure DevOps API to create new PAT
-Write-Output "Creating new PAT..."
-try {
-    $response = Invoke-RestMethod -Uri "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1" `
-        -Method Post -Headers $headers -Body $body -ErrorAction Stop
+# Create new PAT via Azure DevOps API
+Write-Output "Calling Azure DevOps API to generate new PAT..."
+$response = Invoke-RestMethod -Uri "https://vssps.dev.azure.com/$Organization/_apis/tokens/pats?api-version=7.1-preview.1" `
+    -Method Post -Headers $headers -Body $body
 
-    # CORRECTED: PAT token is in response.patToken.token property
-    $newPAT = $response.patToken.token
-    
-    if (-not $newPAT) {
-        throw "PAT token not found in response: $($response | ConvertTo-Json -Depth 5)"
-    }
-}
-catch {
-    $errorMessage = "PAT creation failed: $($_.Exception.Message)"
-    if ($_.ErrorDetails.Message) {
-        $errorMessage += " | Details: $($_.ErrorDetails.Message)"
-    }
-    throw $errorMessage
+$newPAT = $response.patToken
+
+if (-not $newPAT) {
+    throw "Failed to retrieve new PAT. Response: $($response | ConvertTo-Json -Depth 5)"
 }
 
-# Authenticate to Azure (Managed Identity or login) to update Key Vault secret
-try {
-    Write-Output "Authenticating to Azure to update Key Vault secret..."
-    Connect-AzAccount -Identity -ErrorAction Stop
-}
-catch {
-    throw "Azure authentication failed: $($_.Exception.Message)"
-}
+# Store the new PAT in Key Vault
+Write-Output "Storing new PAT in Key Vault..."
+Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue (ConvertTo-SecureString $newPAT -AsPlainText -Force)
 
-# Store new PAT in Azure Key Vault
-try {
-    Write-Output "Storing new PAT in Key Vault: $KeyVaultName secret name: $SecretName"
-    $secretValue = ConvertTo-SecureString $newPAT -AsPlainText -Force
-    Set-AzKeyVaultSecret -VaultName $KeyVaultName -Name $SecretName -SecretValue $secretValue -ErrorAction Stop
-    Write-Output "✅ PAT rotation completed successfully."
-}
-catch {
-    throw "Key Vault update failed: $($_.Exception.Message)"
-}
+Write-Output "PAT rotation completed successfully."
