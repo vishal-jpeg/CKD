@@ -8,33 +8,30 @@ function Read-BicepParamFile {
     param (
         [string]$filePath
     )
-
-    # Read the file and convert it to JSON
     $json = az bicep build-params --file $filePath --stdout | ConvertFrom-Json
     return $json
 }
 
-# Read the first .bicepparam file
+# Read both param files
 $params1 = Read-BicepParamFile -filePath $paramFile1
-
-# Read the second .bicepparam file
 $params2 = Read-BicepParamFile -filePath $paramFile2
 
-# Merge the parameters
+# Merge parameters
 $mergedParams = $params1.parameters.PSObject.Properties + $params2.parameters.PSObject.Properties
 
-# Prepare the final merged parameters (optional: to filter out duplicates or conflicts)
+# Final merged param dictionary
 $finalParams = @{}
 foreach ($param in $mergedParams) {
     $finalParams[$param.Name] = $param.Value
 }
 
-# Output the merged parameters (for verification)
-Write-Host "Merged Parameters:"
-$finalParams
+# Recreate full JSON output like az bicep does
+$finalJson = @{
+    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+    contentVersion = '1.0.0.0'
+    parameters = $finalParams
+}
 
-# Save the merged parameters into a new .bicepparam file (optional)
-$mergedParamFilePath = "/location/Sandbox/merged.bicepparam"
-$finalParams | ConvertTo-Json -Depth 10 | Set-Content $mergedParamFilePath
-
-Write-Host "Merged parameter file saved at: $mergedParamFilePath"
+# Convert to JSON and print to console
+$output = $finalJson | ConvertTo-Json -Depth 10 -Compress
+Write-Warning "output: $output"
