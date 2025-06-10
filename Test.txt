@@ -12,26 +12,24 @@ function Read-BicepParamFile {
     return $json
 }
 
-# Read both param files
+# Read both parameter files
 $params1 = Read-BicepParamFile -filePath $paramFile1
 $params2 = Read-BicepParamFile -filePath $paramFile2
 
-# Merge parameters
-$mergedParams = $params1.parameters.PSObject.Properties + $params2.parameters.PSObject.Properties
-
-# Final merged param dictionary
-$finalParams = @{}
-foreach ($param in $mergedParams) {
-    $finalParams[$param.Name] = $param.Value
-}
-
-# Recreate full JSON output like az bicep does
+# Construct the final merged JSON with nested parameter sets
 $finalJson = @{
-    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-    contentVersion = '1.0.0.0'
-    parameters = $finalParams
+    '$schema'       = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+    contentVersion  = '1.0.0.0'
+    parameters      = @{
+        paramSet1 = @{
+            value = $params1.parameters
+        }
+        paramSet2 = @{
+            value = $params2.parameters
+        }
+    }
 }
 
-# Convert to JSON and print to console
+# Convert to JSON and print the output
 $output = $finalJson | ConvertTo-Json -Depth 10 -Compress
 Write-Warning "output: $output"
