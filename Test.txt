@@ -1,35 +1,98 @@
-param (
-    [string]$paramFile1 = "/location/Sandbox/param1.bicepparam",
-    [string]$paramFile2 = "/location/Sandbox/param2.bicepparam"
-)
+AD User Creation via Azure DevOps Pipeline
 
-# Function to read .bicepparam file and convert to JSON
-function Read-BicepParamFile {
-    param (
-        [string]$filePath
-    )
-    $json = az bicep build-params --file $filePath --stdout | ConvertFrom-Json
-    return $json
-}
+📘 Purpose
 
-# Read both parameter files
-$params1 = Read-BicepParamFile -filePath $paramFile1
-$params2 = Read-BicepParamFile -filePath $paramFile2
+This document outlines the step-by-step process for creating a new Azure AD user by triggering a dedicated Azure DevOps pipeline. This pipeline automates the user creation process in the Azure AD tenant using PowerShell and appropriate service principal permissions.
 
-# Construct the final merged JSON with nested parameter sets
-$finalJson = @{
-    '$schema'       = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-    contentVersion  = '1.0.0.0'
-    parameters      = @{
-        paramSet1 = @{
-            value = $params1.parameters
-        }
-        paramSet2 = @{
-            value = $params2.parameters
-        }
-    }
-}
+✅ Prerequisites
 
-# Convert to JSON and print the output
-$output = $finalJson | ConvertTo-Json -Depth 10 -Compress
-Write-Warning "output: $output"
+- You must have access to the Azure DevOps portal.
+
+- The pipeline can only be run from the main branch.
+
+- Pipeline execution requires approval from either:
+
+  - Dan
+
+  - Nelson
+
+🔐 Permissions
+
+The underlying Azure service principal used in the pipeline has been granted the User Administrator role in Azure Active Directory. This is sufficient to create users via PowerShell using the New-AzADUser cmdlet.
+
+
+
+ℹ️ There is no need for Graph API permissions such as User.ReadWrite.All as long as PowerShell cmdlets are used.
+
+📝 Required Parameters
+
+Parameter	Description	Required
+
+DotName	Username in firstname.lastname format	✅
+
+Department	User’s department	✅
+
+JobTitle	Job title of the user	✅
+
+RITM	ServiceNow RITM or ticket reference	✅
+
+CtEmail	User's email address	✅
+
+CompanyName	Defaults to CTFS (modifiable if needed)	⛔ (Optional)
+
+🚀 How to Trigger the Pipeline
+
+1. Log in to the Azure DevOps Portal.
+
+2. Navigate to the AD User Creation Pipeline project.
+
+3. Select the pipeline named Create-AzureAD-User.
+
+4. Click on Run Pipeline.
+
+5. Ensure the branch selected is main.
+
+6. Enter the required parameters in the provided fields.
+
+7. Submit the run request.
+
+8. Wait for approval from Dan or Nelson.
+
+9. Once approved and successfully run:
+
+   - A new Azure AD user will be created automatically.
+
+   - The user will be added to the group SG-AAD-User-Onboarding.
+
+📎 Notes
+
+- The password is automatically generated securely during execution.
+
+- The user will be forced to reset their password on first login.
+
+- All user accounts are created under the cantirebank.onmicrosoft.com tenant.
+
+🔄 Example Input
+
+Field	Example Value
+
+DotName	jane.doe
+
+Department	IT Security
+
+JobTitle	Security Analyst
+
+RITM	RITM0123456
+
+CtEmail	jane.doe@ctfs.com
+
+CompanyName	CTFS (or another if needed)
+
+✅ Success Criteria
+
+- Pipeline completes successfully without error.
+
+- Azure AD user is created and available in the directory.
+
+- User is added to default onboarding group.
+
