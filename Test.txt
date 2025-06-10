@@ -1,1 +1,40 @@
-$response | ConvertTo-Json -Depth 10 | Out-String | Write-Output
+param (
+    [string]$paramFile1 = "/location/Sandbox/param1.bicepparam",
+    [string]$paramFile2 = "/location/Sandbox/param2.bicepparam"
+)
+
+# Function to read .bicepparam file and convert to JSON
+function Read-BicepParamFile {
+    param (
+        [string]$filePath
+    )
+
+    # Read the file and convert it to JSON
+    $json = az bicep build-params --file $filePath --stdout | ConvertFrom-Json
+    return $json
+}
+
+# Read the first .bicepparam file
+$params1 = Read-BicepParamFile -filePath $paramFile1
+
+# Read the second .bicepparam file
+$params2 = Read-BicepParamFile -filePath $paramFile2
+
+# Merge the parameters
+$mergedParams = $params1.parameters.PSObject.Properties + $params2.parameters.PSObject.Properties
+
+# Prepare the final merged parameters (optional: to filter out duplicates or conflicts)
+$finalParams = @{}
+foreach ($param in $mergedParams) {
+    $finalParams[$param.Name] = $param.Value
+}
+
+# Output the merged parameters (for verification)
+Write-Host "Merged Parameters:"
+$finalParams
+
+# Save the merged parameters into a new .bicepparam file (optional)
+$mergedParamFilePath = "/location/Sandbox/merged.bicepparam"
+$finalParams | ConvertTo-Json -Depth 10 | Set-Content $mergedParamFilePath
+
+Write-Host "Merged parameter file saved at: $mergedParamFilePath"
