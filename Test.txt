@@ -1,98 +1,69 @@
-AD User Creation via Azure DevOps Pipeline
+trigger: none
 
-📘 Purpose
+stages:
+  - stage: MergeAndDeploy
+    jobs:
+      - job: MergeParamsAndDeploy
+        pool:
+          vmImage: 'windows-latest'
 
-This document outlines the step-by-step process for creating a new Azure AD user by triggering a dedicated Azure DevOps pipeline. This pipeline automates the user creation process in the Azure AD tenant using PowerShell and appropriate service principal permissions.
+        steps:
+          - checkout: self
 
-✅ Prerequisites
+          - task: PowerShell@2
+            name: MergeBicepParams
+            inputs:
+              targetType: 'inline'
+              pwsh: true
+              script: |
+                $paramFile1 = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/baseFirewall.json"
+                $paramFile2 = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/rcg-sb-default-01.json"
+                $outputFile = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/mergedParams.json"
 
-- You must have access to the Azure DevOps portal.
+                function Read-JsonParamFile {
+                    param (
+                        [string]$filePath
+                    )
+                    $jsonContent = Get-Content -Raw -Path $filePath | ConvertFrom-Json
+                    return $jsonContent.parameters
+                }
 
-- The pipeline can only be run from the main branch.
+                $params1 = Read-JsonParamFile -filePath $paramFile1
+                $params2 = Read-JsonParamFile -filePath $paramFile2
 
-- Pipeline execution requires approval from either:
+                # Merge logic
+                $mergedParams = @{}
 
-  - Dan
+                $params1.PSObject.Properties | ForEach-Object {
+                    $mergedParams[$_.Name] = @{ value = $_.Value.value }
+                }
 
-  - Nelson
+                $params2.PSObject.Properties | ForEach-Object {
+                    $mergedParams[$_.Name] = @{ value = $_.Value.value }
+                }
 
-🔐 Permissions
+                # Final JSON structure
+                $finalJson = @{
+                    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
+                    contentVersion = '1.0.0.0'
+                    parameters = $mergedParams
+                }
 
-The underlying Azure service principal used in the pipeline has been granted the User Administrator role in Azure Active Directory. This is sufficient to create users via PowerShell using the New-AzADUser cmdlet.
+                # Save to output file
+                $finalJson | ConvertTo-Json -Depth 10 | Out-File -FilePath $outputFile -Encoding utf8
+                Write-Host "✅ Merged parameter file created at: $outputFile"
 
+          - task: AzureCLI@2
+            name: DeployMainBicep
+            inputs:
+              azureSubscription: 'YOUR-AZURE-SERVICE-CONNECTION-NAME'
+              scriptType: 'ps'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                $mergedParamFile = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/mergedParams.json"
+                $templateFile = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/main.bicep"
 
-
-ℹ️ There is no need for Graph API permissions such as User.ReadWrite.All as long as PowerShell cmdlets are used.
-
-📝 Required Parameters
-
-Parameter	Description	Required
-
-DotName	Username in firstname.lastname format	✅
-
-Department	User’s department	✅
-
-JobTitle	Job title of the user	✅
-
-RITM	ServiceNow RITM or ticket reference	✅
-
-CtEmail	User's email address	✅
-
-CompanyName	Defaults to CTFS (modifiable if needed)	⛔ (Optional)
-
-🚀 How to Trigger the Pipeline
-
-1. Log in to the Azure DevOps Portal.
-
-2. Navigate to the AD User Creation Pipeline project.
-
-3. Select the pipeline named Create-AzureAD-User.
-
-4. Click on Run Pipeline.
-
-5. Ensure the branch selected is main.
-
-6. Enter the required parameters in the provided fields.
-
-7. Submit the run request.
-
-8. Wait for approval from Dan or Nelson.
-
-9. Once approved and successfully run:
-
-   - A new Azure AD user will be created automatically.
-
-   - The user will be added to the group SG-AAD-User-Onboarding.
-
-📎 Notes
-
-- The password is automatically generated securely during execution.
-
-- The user will be forced to reset their password on first login.
-
-- All user accounts are created under the cantirebank.onmicrosoft.com tenant.
-
-🔄 Example Input
-
-Field	Example Value
-
-DotName	jane.doe
-
-Department	IT Security
-
-JobTitle	Security Analyst
-
-RITM	RITM0123456
-
-CtEmail	jane.doe@ctfs.com
-
-CompanyName	CTFS (or another if needed)
-
-✅ Success Criteria
-
-- Pipeline completes successfully without error.
-
-- Azure AD user is created and available in the directory.
-
-- User is added to default onboarding group.
-
+                az deployment sub create `
+                  --location canada-central `
+                  --template-file $templateFile `
+                  --parameters @$mergedParamFile
