@@ -1,50 +1,5 @@
-Great! Since you’ve already updated the Azure DevOps YAML file ✅,
-here is the full list of changes you need to make outside YAML (inside your Bicep code):
-
-
----
-
-✅ Required Changes in Bicep (Non-YAML Changes):
-
-✅ 1. Add a new runtime parameter (RCGName) in your main.bicep
-
-This will receive the RCG name that the user selects from the Azure DevOps portal.
-
-@allowed([
-  'All'
-  'rcgsbdefault01'
-  'rcgsbdefault02'
-])
-param RCGName string = 'All'
-
-
----
-
-✅ 2. Filter the RCG Deployment Loop Based on Selected RCG
-
-Wherever you currently have your RCG deployment loop (like below):
-
-module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
-  for rulecollectionGroup in firewallPoliciesDeploy: {
-    name: 'ruleCollectionGroup-${uniqueString(rulecollectionGroup.existingFirewallPolicyName, rulecollectionGroup.ruleCollectionGroups[0].name)}'
-    dependsOn: [
-      firewallPolicyParent
-    ]
-    params: {
-      ruleCollectionGroup: {
-        existingFirewallPolicyName: rulecollectionGroup.existingFirewallPolicyName
-        ruleCollectionGroups: rulecollectionGroup.ruleCollectionGroups
-        rgName: rulecollectionGroup.rgName
-        subscriptionId: rulecollectionGroup.subscriptionId
-      }
-    }
-  }
-]
-
-👉 Replace with this filtered deployment loop:
-
-var selectedRCGs = RCGName == 'All' ? firewallPoliciesDeploy : [
-  for rcg in firewallPoliciesDeploy: if (RCGName == rcg.ruleCollectionGroups[0].name) {
+var selectedRCGs = [
+  for rcg in firewallPoliciesDeploy: if (RCGName == 'All' || RCGName == rcg.ruleCollectionGroups[0].name) {
     rcg
   }
 ]
@@ -65,39 +20,3 @@ module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
     }
   }
 ]
-
-
----
-
-✅ 3. (Optional) - If you want to filter firewall deployment too
-
-If your main.bicep also deploys firewall policies and you want to filter those too, you’ll need similar logic for firewall policy modules.
-Let me know if you want that.
-
-
----
-
-✅ 4. No Changes Required in:
-
-You don’t need to change your rcg.bicep, rcg-sb-default-01.bicep, rcg-importbicep.bicep etc.
-They can stay as-is.
-
-
----
-
-✅ ✅ Summary of Required Bicep Changes:
-
-File	Action
-
-main.bicep	✅ Add RCGName parameter
-main.bicep	✅ Filter the RCG deployment loop based on selected RCG
-main.bicep	✅ Optional: Add similar filtering for firewall policy deployment (if needed)
-
-
-
----
-
-If you want, I can generate the full final clean main.bicep file with all these changes included.
-
-👉 Want me to?
-
