@@ -1,69 +1,125 @@
-trigger: none
+✅ Yes, that is absolutely possible.
+You can make your Azure DevOps pipeline prompt users at runtime with a dropdown (or multi-select list) of available RCGs, and then deploy only the selected RCG(s).
 
-stages:
-  - stage: MergeAndDeploy
-    jobs:
-      - job: MergeParamsAndDeploy
-        pool:
-          vmImage: 'windows-latest'
 
-        steps:
-          - checkout: self
+---
 
-          - task: PowerShell@2
-            name: MergeBicepParams
-            inputs:
-              targetType: 'inline'
-              pwsh: true
-              script: |
-                $paramFile1 = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/baseFirewall.json"
-                $paramFile2 = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/rcg-sb-default-01.json"
-                $outputFile = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/mergedParams.json"
+✅ High-Level Approach:
 
-                function Read-JsonParamFile {
-                    param (
-                        [string]$filePath
-                    )
-                    $jsonContent = Get-Content -Raw -Path $filePath | ConvertFrom-Json
-                    return $jsonContent.parameters
-                }
+You need to implement runtime pipeline parameters in Azure DevOps YAML like this:
 
-                $params1 = Read-JsonParamFile -filePath $paramFile1
-                $params2 = Read-JsonParamFile -filePath $paramFile2
 
-                # Merge logic
-                $mergedParams = @{}
+---
 
-                $params1.PSObject.Properties | ForEach-Object {
-                    $mergedParams[$_.Name] = @{ value = $_.Value.value }
-                }
+✅ Step 1: Define Pipeline Parameters (Dropdown for RCG selection)
 
-                $params2.PSObject.Properties | ForEach-Object {
-                    $mergedParams[$_.Name] = @{ value = $_.Value.value }
-                }
+Example in your Azure DevOps pipeline YAML:
 
-                # Final JSON structure
-                $finalJson = @{
-                    '$schema' = 'https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#'
-                    contentVersion = '1.0.0.0'
-                    parameters = $mergedParams
-                }
+parameters:
+  - name: RCGtoDeploy
+    displayName: 'Select Rule Collection Group to Deploy'
+    type: string
+    default: 'All'
+    values:
+      - All
+      - rcgsbdefault01
+      - rcgsbdefault02
 
-                # Save to output file
-                $finalJson | ConvertTo-Json -Depth 10 | Out-File -FilePath $outputFile -Encoding utf8
-                Write-Host "✅ Merged parameter file created at: $outputFile"
 
-          - task: AzureCLI@2
-            name: DeployMainBicep
-            inputs:
-              azureSubscription: 'YOUR-AZURE-SERVICE-CONNECTION-NAME'
-              scriptType: 'ps'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                $mergedParamFile = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/mergedParams.json"
-                $templateFile = "$(System.DefaultWorkingDirectory)/CTB/canada_central/common_services/common/Connect/Sandbox/main.bicep"
+---
 
-                az deployment sub create `
-                  --location canada-central `
-                  --template-file $templateFile `
-                  --parameters @$mergedParamFile
+✅ Step 2: Pass Selected RCG to Your Deployment Script
+
+In your pipeline task (ex: Azure CLI or PowerShell), pass this parameter down.
+
+For example, in Azure CLI task:
+
+- task: AzureCLI@2
+  inputs:
+    azureSubscription: 'YourServiceConnection'
+    scriptType: 'bash'
+    scriptLocation: 'inlineScript'
+    inlineScript: |
+      az deployment sub create \
+        --location 'eastus' \
+        --template-file 'main.bicep' \
+        --parameters RCGName=${{ parameters.RCGtoDeploy }}
+
+
+---
+
+✅ Step 3: Add Filtering Logic in Your Bicep File (Filter based on selected RCG)
+
+Inside your main.bicep, add a new parameter:
+
+@allowed([
+  'All'
+  'rcgsbdefault01'
+  'rcgsbdefault02'
+])
+param RCGName string = 'All'
+
+Then, before your module loop, filter the RCGs like this:
+
+var selectedRCGs = RCGName == 'All' ? firewallPoliciesDeploy : [
+  for rcg in firewallPoliciesDeploy: if (RCGName == rcg.ruleCollectionGroups[0].name) {
+    rcg
+  }
+]
+
+Then update your loop to deploy only selected ones:
+
+module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
+  for rulecollectionGroup in selectedRCGs: {
+    name: 'ruleCollectionGroup-${uniqueString(rulecollectionGroup.existingFirewallPolicyName, rulecollectionGroup.ruleCollectionGroups[0].name)}'
+    dependsOn: [
+      firewallPolicyParent
+    ]
+    params: {
+      ruleCollectionGroup: {
+        existingFirewallPolicyName: rulecollectionGroup.existingFirewallPolicyName
+        ruleCollectionGroups: rulecollectionGroup.ruleCollectionGroups
+        rgName: rulecollectionGroup.rgName
+        subscriptionId: rulecollectionGroup.subscriptionId
+      }
+    }
+  }
+]
+
+
+---
+
+✅ ✅ Summary:
+
+Task	Action
+
+Pipeline UI	Add a runtime dropdown parameter for RCG selection
+YAML	Pass the selected RCG as a Bicep parameter
+Bicep	Filter your RCG array based on selected input
+Deployment	Deploy only selected RCG(s)
+
+
+
+---
+
+✅ ✅ Optional Extension (Multi-select Support 🚩):
+
+If you want to allow multi-select (multiple RCGs at once), you’ll have to:
+
+1. Change parameter type to object or array in both pipeline and Bicep
+
+
+2. Loop through selected values inside Bicep
+
+
+3. Filter based on membership (contains() or array match)
+
+
+
+If you want, I can help with that version too.
+
+
+---
+
+👉 Want me to give you the exact YAML + Bicep snippets for multi-select case?
+
