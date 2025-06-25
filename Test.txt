@@ -1,7 +1,14 @@
+@allowed([
+  'All'
+  'rcgsbdefault01'
+  'rcgsbdefault02'
+])
+param RCGName string = 'All'
+
 var selectedRCGs = [
-  for rcg in firewallPoliciesDeploy: if (RCGName == 'All' || RCGName == rcg.ruleCollectionGroups[0].name) {
-    rcg
-  }
+  for rcg in firewallPoliciesDeploy
+  where (RCGName == 'All' || RCGName == rcg.ruleCollectionGroups[0].name)
+  select rcg
 ]
 
 module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
