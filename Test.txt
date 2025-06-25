@@ -140,3 +140,90 @@ The main.bicep file is modified to filter the selected RCGs and Firewall Policie
 
 Does this approach work for you? If you need multi-select support, I can help you with that too!
 
+trigger: none
+
+name: Deploy-Bicep-Files-$(Build.BuildId)
+
+parameters:
+  - name: runValidation
+    displayName: "Run Validation and Scan"
+    type: boolean
+    default: true
+
+  - name: templateFileDirectory
+    displayName: "Template File Directory"
+    type: string
+    default: './CTB/TemplateFiles'
+
+  - name: RCGtoDeploy
+    displayName: "Select Rule Collection Group to Deploy"
+    type: string
+    default: 'All'
+    values:
+      - All
+      - rcgsbdefault01
+      - rcgsbdefault02
+
+variables:
+  azureServiceConnection: 'ctb-ac-sb-connect'
+  location: 'canadacentral'
+  templateFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicep'
+  parameterFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicepparam'
+
+pool:
+  name: Merchantss
+
+stages:
+  - stage: Lint
+    displayName: Lint and Validate
+    jobs:
+      - job: LintCode
+        displayName: Run Bicep Linter
+        steps:
+          - script: |
+              az bicep build --file $(templateFile) --outdir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
+              dir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
+            displayName: Run Bicep Linter
+
+  - stage: Validation
+    displayName: Preflight Validation
+    condition: eq(${{ parameters.runValidation }}, true)
+    jobs:
+      - job: RunValidation
+        displayName: Preflight Template Validation
+        steps:
+          - task: AzureCLI@2
+            name: RunPreflightValidation
+            displayName: Run preflight validation
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub validate \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters $(parameterFile) \
+                  --parameters RCGName=${{ parameters.RCGtoDeploy }}
+
+  - stage: WhatIf
+    displayName: Preview (What-If)
+    condition: eq(${{ parameters.runValidation }}, true)
+    jobs:
+      - job: PreviewJob
+        displayName: Deployment Preview
+        steps:
+          - task: AzureCLI@2
+            name: Preview
+            displayName: Run Preview
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                az deployment sub what-if \
+                  --location $(location) \
+                  --template-file $(templateFile) \
+                  --parameters $(parameterFile) \
+                  --parameters RCGName=${{ parameters.RCGtoDeploy }}
+
