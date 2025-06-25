@@ -1,19 +1,13 @@
-✅ Yes, that is absolutely possible.
-You can make your Azure DevOps pipeline prompt users at runtime with a dropdown (or multi-select list) of available RCGs, and then deploy only the selected RCG(s).
+Got it! If your main.bicep file contains both firewall policies and rule collection groups (RCGs), and you want to select and deploy only the RCG(s) based on the runtime input (while keeping both resources in the same template), we can adjust the logic accordingly.
+
+Here’s how you can handle this:
 
 
 ---
 
-✅ High-Level Approach:
+✅ Step 1: Add Parameters in Azure DevOps YAML
 
-You need to implement runtime pipeline parameters in Azure DevOps YAML like this:
-
-
----
-
-✅ Step 1: Define Pipeline Parameters (Dropdown for RCG selection)
-
-Example in your Azure DevOps pipeline YAML:
+We will still prompt for RCG selection using parameters in the YAML, and if "All" is selected, we will deploy all rule collection groups and associated firewall policies. If a specific RCG is selected, we deploy just that specific RCG and its firewall policy.
 
 parameters:
   - name: RCGtoDeploy
@@ -28,11 +22,77 @@ parameters:
 
 ---
 
-✅ Step 2: Pass Selected RCG to Your Deployment Script
+✅ Step 2: Update main.bicep to Filter Based on RCG Selection
 
-In your pipeline task (ex: Azure CLI or PowerShell), pass this parameter down.
+Bicep: Define Parameters for RCG Selection
 
-For example, in Azure CLI task:
+In main.bicep, you will define a parameter for the RCG selection. If "All" is selected, you deploy all RCGs. If a specific RCG is selected, only that RCG and its associated firewall policies will be deployed.
+
+@allowed([
+  'All'
+  'rcgsbdefault01'
+  'rcgsbdefault02'
+])
+param RCGName string = 'All'
+
+@allowed([
+  'firewallPolicy01'
+  'firewallPolicy02'
+])
+param FirewallPolicyName string = 'All'
+
+var selectedRCGs = RCGName == 'All' ? firewallPoliciesDeploy : [
+  for rcg in firewallPoliciesDeploy: if (RCGName == rcg.ruleCollectionGroups[0].name) {
+    rcg
+  }
+]
+
+var selectedFirewallPolicy = FirewallPolicyName == 'All' ? firewallPoliciesDeploy : [
+  for policy in firewallPoliciesDeploy: if (FirewallPolicyName == policy.existingFirewallPolicyName) {
+    policy
+  }
+]
+
+Step 3: Update Deployment Logic to Deploy Both RCGs and Firewall Policies
+
+Since both firewall policies and RCGs are part of the same template, you should first deploy the firewall policy and then deploy the rule collection groups associated with the selected firewall policy. The logic will check if the selected RCG or firewall policy is part of the filtered list and deploy only those that match.
+
+Here is how you can structure your Bicep file:
+
+// Deploy selected firewall policy first
+module firewallPolicyDeploy 'Module/Firewall/firewallPolicy.bicep' = [
+  for policy in selectedFirewallPolicy: {
+    name: 'firewallPolicy-${policy.existingFirewallPolicyName}'
+    params: {
+      existingFirewallPolicyName: policy.existingFirewallPolicyName
+      rgName: policy.rgName
+      subscriptionId: policy.subscriptionId
+    }
+  }
+]
+
+// Deploy the selected rule collection groups
+module firewallPolicyRuleCollectionGroups 'Module/RCG/firewallPolicies-ruleCollectionGroups.bicep' = [
+  for rulecollectionGroup in selectedRCGs: {
+    name: 'ruleCollectionGroup-${uniqueString(rulecollectionGroup.existingFirewallPolicyName, rulecollectionGroup.ruleCollectionGroups[0].name)}'
+    dependsOn: [
+      firewallPolicyDeploy
+    ]
+    params: {
+      existingFirewallPolicyName: rulecollectionGroup.existingFirewallPolicyName
+      ruleCollectionGroups: rulecollectionGroup.ruleCollectionGroups
+      rgName: rulecollectionGroup.rgName
+      subscriptionId: rulecollectionGroup.subscriptionId
+    }
+  }
+]
+
+
+---
+
+Step 4: Modify Azure DevOps Pipeline to Pass Parameters for Firewall and RCG
+
+Now, update your Azure DevOps pipeline to pass both RCG and Firewall Policy parameters. Depending on the selected RCG, this will deploy the corresponding resources.
 
 - task: AzureCLI@2
   inputs:
@@ -43,83 +103,40 @@ For example, in Azure CLI task:
       az deployment sub create \
         --location 'eastus' \
         --template-file 'main.bicep' \
-        --parameters RCGName=${{ parameters.RCGtoDeploy }}
+        --parameters RCGName=${{ parameters.RCGtoDeploy }} \
+        --parameters FirewallPolicyName=${{ parameters.FirewallPolicyName }}
 
 
 ---
 
-✅ Step 3: Add Filtering Logic in Your Bicep File (Filter based on selected RCG)
+Explanation:
 
-Inside your main.bicep, add a new parameter:
+RCGName: If you choose "All," the deployment will trigger all RCGs. If you choose a specific RCG like rcgsbdefault01, only that RCG will be deployed.
 
-@allowed([
-  'All'
-  'rcgsbdefault01'
-  'rcgsbdefault02'
-])
-param RCGName string = 'All'
+FirewallPolicyName: Similar to the RCG, this controls which firewall policies are deployed. "All" will deploy all policies, but selecting a specific policy will limit the deployment to that policy.
 
-Then, before your module loop, filter the RCGs like this:
-
-var selectedRCGs = RCGName == 'All' ? firewallPoliciesDeploy : [
-  for rcg in firewallPoliciesDeploy: if (RCGName == rcg.ruleCollectionGroups[0].name) {
-    rcg
-  }
-]
-
-Then update your loop to deploy only selected ones:
-
-module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
-  for rulecollectionGroup in selectedRCGs: {
-    name: 'ruleCollectionGroup-${uniqueString(rulecollectionGroup.existingFirewallPolicyName, rulecollectionGroup.ruleCollectionGroups[0].name)}'
-    dependsOn: [
-      firewallPolicyParent
-    ]
-    params: {
-      ruleCollectionGroup: {
-        existingFirewallPolicyName: rulecollectionGroup.existingFirewallPolicyName
-        ruleCollectionGroups: rulecollectionGroup.ruleCollectionGroups
-        rgName: rulecollectionGroup.rgName
-        subscriptionId: rulecollectionGroup.subscriptionId
-      }
-    }
-  }
-]
-
-
----
-
-✅ ✅ Summary:
-
-Task	Action
-
-Pipeline UI	Add a runtime dropdown parameter for RCG selection
-YAML	Pass the selected RCG as a Bicep parameter
-Bicep	Filter your RCG array based on selected input
-Deployment	Deploy only selected RCG(s)
+Filtering Logic: The selectedRCGs and selectedFirewallPolicy arrays ensure only the required resources are deployed based on your pipeline parameters.
 
 
 
 ---
 
-✅ ✅ Optional Extension (Multi-select Support 🚩):
+✅ Optional Extension: Multi-Select Support (for both RCG and Firewall)
 
-If you want to allow multi-select (multiple RCGs at once), you’ll have to:
-
-1. Change parameter type to object or array in both pipeline and Bicep
-
-
-2. Loop through selected values inside Bicep
-
-
-3. Filter based on membership (contains() or array match)
-
-
-
-If you want, I can help with that version too.
+If you want to allow the selection of multiple RCGs or firewall policies at runtime, you can modify the parameters to accept an array (multi-select).
 
 
 ---
 
-👉 Want me to give you the exact YAML + Bicep snippets for multi-select case?
+Summary:
+
+You can use Azure DevOps runtime parameters to allow users to select which RCG and Firewall Policy to deploy at runtime.
+
+The main.bicep file is modified to filter the selected RCGs and Firewall Policies based on the parameters passed by the Azure DevOps pipeline.
+
+
+
+---
+
+Does this approach work for you? If you need multi-select support, I can help you with that too!
 
