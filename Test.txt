@@ -1,9 +1,54 @@
+targetScope = 'subscription'
+
+// =======================
+// PARAMETERS
+// =======================
+@allowed([
+  'All'
+  'rcgsbdefault01'
+  'rcgsbdefault02'
+])
+param RCGName string = 'All'
+
+// =======================
+// IMPORT RCG DATA
+// =======================
+import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
+
+// =======================
+// COLLECT ALL RCG DEPLOYMENTS
+// =======================
+var firewallPoliciesDeploy = [
+  ...rcg.fwRCGDeploy
+]
+
+// =======================
+// DEPLOY FIREWALL POLICIES (UNFILTERED - ALL)
+// =======================
+// Optional: You can later add filtering for firewall policy too, if needed
+module firewallPolicyParent 'Module/Firewall/firewallPolicy.bicep' = [
+  for policy in firewallPoliciesDeploy: {
+    name: 'firewallPolicy-${policy.existingFirewallPolicyName}'
+    params: {
+      existingFirewallPolicyName: policy.existingFirewallPolicyName
+      rgName: policy.rgName
+      subscriptionId: policy.subscriptionId
+    }
+  }
+]
+
+// =======================
+// FILTER RCGS BASED ON SELECTED RUNTIME PARAM
+// =======================
 var selectedRCGs = [
   for rcgItem in firewallPoliciesDeploy: if (RCGName == 'All' || RCGName == rcgItem.ruleCollectionGroups[0].name) {
     rcgItem
   }
 ]
 
+// =======================
+// DEPLOY SELECTED RCGS
+// =======================
 module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
   for rulecollectionGroup in selectedRCGs: {
     name: 'ruleCollectionGroup-${uniqueString(rulecollectionGroup.existingFirewallPolicyName, rulecollectionGroup.ruleCollectionGroups[0].name)}'
