@@ -1,57 +1,34 @@
 targetScope = 'subscription'
 
-// =======================
+// ============================
 // PARAMETERS
-// =======================
-@allowed([
-  'All'
-  'rcgsbdefault01'
-  'rcgsbdefault02'
-])
-param RCGName string = 'All'
+// ============================
+param RCGsToDeploy array
 
-// =======================
-// IMPORT RCG DATA
-// =======================
-import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
+// Optional: If you still want to use .bicepparam for static params
+// Just include your existing param file like before
+// Example: param location string
 
-// =======================
-// COLLECT ALL RCG DEPLOYMENTS
-// =======================
-var firewallPoliciesDeploy = [
-  ...rcg.fwRCGDeploy
-]
-
-// =======================
-// DEPLOY FIREWALL POLICIES (ALL)
-// =======================
+// ============================
+// DEPLOY FIREWALL POLICIES (Optional)
+// ============================
+// Assuming you want to deploy firewall policies too, loop over same RCG input array
 module firewallPolicyParent 'Module/Firewall/firewallPolicy.bicep' = [
-  for policy in firewallPoliciesDeploy: {
-    name: 'firewallPolicy-${policy.existingFirewallPolicyName}'
+  for rcgItem in RCGsToDeploy: {
+    name: 'firewallPolicy-${rcgItem.existingFirewallPolicyName}'
     params: {
-      existingFirewallPolicyName: policy.existingFirewallPolicyName
-      rgName: policy.rgName
-      subscriptionId: policy.subscriptionId
+      existingFirewallPolicyName: rcgItem.existingFirewallPolicyName
+      rgName: rcgItem.rgName
+      subscriptionId: rcgItem.subscriptionId
     }
   }
 ]
 
-// =======================
-// FILTER RCGS FOR DEPLOYMENT
-// =======================
-var allRCGs = firewallPoliciesDeploy
-
-var filteredRCGs = [
-  for rcgItem in firewallPoliciesDeploy: if (RCGName == rcgItem.ruleCollectionGroups[0].name) {
-    rcgItem
-  }
-]
-
-// =======================
-// DEPLOY SELECTED RCGS BASED ON RUNTIME PARAM
-// =======================
+// ============================
+// DEPLOY RCGs BASED ON FILTERED ARRAY PASSED FROM PIPELINE
+// ============================
 module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
-  for rulecollectionGroup in (RCGName == 'All' ? allRCGs : filteredRCGs): {
+  for rulecollectionGroup in RCGsToDeploy: {
     name: 'ruleCollectionGroup-${uniqueString(rulecollectionGroup.existingFirewallPolicyName, rulecollectionGroup.ruleCollectionGroups[0].name)}'
     dependsOn: [
       firewallPolicyParent
@@ -66,3 +43,113 @@ module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
     }
   }
 ]
+
+
+trigger: none
+
+name: Deploy-Bicep-With-RCG-Filter
+
+parameters:
+  - name: runValidation
+    displayName: "Run Validation and Scan"
+    type: boolean
+    default: true
+
+  - name: templateFileDirectory
+    displayName: "Template File Directory"
+    type: string
+    default: ./CTB/TemplateFiles
+
+  - name: RCGtoDeploy
+    displayName: "Select RCG to Deploy"
+    type: string
+    default: "All"
+    values:
+      - All
+      - rcgsbdefault01
+      - rcgsbdefault02
+
+variables:
+  azureServiceConnection: 'ctb-ac-sb-connect'
+  location: 'canadacentral'
+  templateFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicep'
+  parameterFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicepparam'
+
+pool:
+  name: Merchantss
+
+stages:
+  - stage: Lint
+    jobs:
+      - job: LintCode
+        displayName: Lint code
+        steps:
+          - script: |
+              az bicep build --file $(templateFile) --outdir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
+              dir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
+            displayName: Run Bicep linter
+            continueOnError: false
+
+  - stage: Deploy
+    jobs:
+      - job: DeployRCGs
+        displayName: Deploy Selected RCGs
+        steps:
+          - checkout: self
+
+          # Generate full RCG list (Assumes rcg.fwRCGDeploy can be exported to JSON somehow before this step)
+          - task: Bash@3
+            displayName: Generate Full RCG Array JSON
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo '[{"existingFirewallPolicyName": "testfw", "rgName": "ctb-ac-sb-rg-co-vwan-01", "subscriptionId": "35909b9b-9868-4f63-b66b-d3178b513770", "ruleCollectionGroups": [{"policyname": "acsbcofwpolicy-parent-01", "name": "rcgsbdefault01", "priority": 3300, "rulecollections": []}]}, {"existingFirewallPolicyName": "testfw", "rgName": "ctb-ac-sb-rg-co-vwan-01", "subscriptionId": "35909b9b-9868-4f63-b66b-d3178b513770", "ruleCollectionGroups": [{"policyname": "acsbcofwpolicy-parent-01", "name": "rcgsbdefault02", "priority": 3400, "rulecollections": []}]}]' > $(System.DefaultWorkingDirectory)/allRCGs.json
+
+          # Filter RCG array at runtime
+          - task: Bash@3
+            displayName: Filter RCGs To Deploy
+            inputs:
+              targetType: 'inline'
+              script: |
+                echo "Filtering based on selected RCG: ${{ parameters.RCGtoDeploy }}"
+                if [[ '${{ parameters.RCGtoDeploy }}' == 'All' ]]; then
+                  cp $(System.DefaultWorkingDirectory)/allRCGs.json $(System.DefaultWorkingDirectory)/selectedRCGs.json
+                else
+                  jq --arg name "${{ parameters.RCGtoDeploy }}" '[.[] | select(.ruleCollectionGroups[0].name == $name)]' $(System.DefaultWorkingDirectory)/allRCGs.json > $(System.DefaultWorkingDirectory)/selectedRCGs.json
+                fi
+
+                echo "Selected RCGs to deploy:"
+                cat $(System.DefaultWorkingDirectory)/selectedRCGs.json
+
+          # Preflight validation
+          - task: AzureCLI@2
+            name: RunPreflightValidation
+            displayName: Run Preflight Validation
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment sub validate --location $(location) --template-file $(templateFile) --parameters $(parameterFile) RCGsToDeploy=@$(System.DefaultWorkingDirectory)/selectedRCGs.json
+
+          # What-if Preview
+          - task: AzureCLI@2
+            name: Preview
+            displayName: Run What-if Preview
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment sub what-if --location $(location) --template-file $(templateFile) --parameters $(parameterFile) RCGsToDeploy=@$(System.DefaultWorkingDirectory)/selectedRCGs.json
+
+          # Actual deployment
+          - task: AzureCLI@2
+            name: DeployRCGs
+            displayName: Deploy Selected RCGs
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                az deployment sub create --location $(location) --template-file $(templateFile) --parameters $(parameterFile) RCGsToDeploy=@$(System.DefaultWorkingDirectory)/selectedRCGs.json
