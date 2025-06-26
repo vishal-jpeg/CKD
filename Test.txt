@@ -1,94 +1,33 @@
-To achieve selective deployment of specific Rule Collection Groups (RCGs) during pipeline execution, you'll need to modify your Bicep code to include a parameter that filters which RCGs should be deployed. Here's the solution:
+parameters:
+- name: selectedRCGs
+  displayName: 'Select RCGs to Deploy'
+  type: object
+  default:
+    - rcg_sb_default_01
+    - rcg_sb_default_02
+  values:
+    - rcg_sb_default_01
+    - rcg_sb_default_02
 
-### 1. Modify `rcg-importbicep.bicep` to Export Individual RCGs
-```bicep
-import { rcgsbdefault01 } from 'rcg-sb-default-01.bicep'
-import { rcgsbdefault02 } from 'rcg-sb-default-02.bicep'
+variables:
+  selectedRCGsJson: ${{ convertToJson(parameters.selectedRCGs) }}
 
-@export()
-var rcgMap = {
-  rcgsbdefault01: rcgsbdefault01
-  rcgsbdefault02: rcgsbdefault02
-}
-```
-
-### 2. Update `main.bicep` with Filtering Logic
-```bicep
-targetScope = 'subscription'
-
-// Import RCG configurations
-import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
-
-// New parameter to select which RCGs to deploy
-param selectedRCGs array = [
-  'rcgsbdefault01'
-  'rcgsbdefault02'
-]
-
-// Filter RCGs based on parameter input
-var filteredRCGs = [for rcgName in selectedRCGs: {
-  name: rcgName
-  config: rcg.rcgMap[rcgName]
-}]
-
-// Deploy only selected RCGs
-module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [for item in filteredRCGs: {
-  name: 'ruleCollectionGroup-${uniqueString(item.config.existingFirewallPolicyName)}'
-  params: {
-    rulecollectionGroup: {
-      existingFirewallPolicyName: item.config.existingFirewallPolicyName
-      ruleCollectionGroups: item.config.ruleCollectionGroups
-      rgName: item.config.rgName
-      subscriptionId: item.config.subscriptionId
-    }
-  }
-}]
-```
-
-### 3. Create `main.bicepparam` File
-```bicep
-using 'main.bicep'
-
-param selectedRCGs = [
-  'rcgsbdefault01'  // Only include RCGs you want deployed
-]
-```
-
-### Pipeline Implementation
-When triggering the pipeline, override the `selectedRCGs` parameter to specify which RCGs to deploy:
-
-**PowerShell Example (Azure DevOps):**
-```powershell
-az deployment sub create `
-  --location eastus `
-  --template-file main.bicep `
-  --parameters selectedRCGs="['rcgsbdefault01']"
-```
-
-**YAML Pipeline Snippet:**
-```yaml
-- task: AzureCLI@2
-  inputs:
-    azureSubscription: 'your-subscription'
-    scriptType: 'ps'
-    scriptLocation: 'inlineScript'
-    inlineScript: |
-      az deployment sub create \
-        --location eastus \
-        --template-file main.bicep \
-        --parameters selectedRCGs="['rcgsbdefault01']"
-```
-
-### Key Changes Explained:
-1. **RCG Map**: Converted the RCG list to a mappable object
-2. **Filter Parameter**: Added `selectedRCGs` array parameter to specify which RCGs to deploy
-3. **Dynamic Filtering**: Used array comprehension to filter RCGs before deployment
-4. **Pipeline Control:** Parameter can be overridden at deployment time
-
-### Deployment Workflow:
-1. Pipeline triggers with list of desired RCGs
-2. Bicep filters only specified RCGs from the map
-3. Only selected RCGs are passed to the deployment module
-4. Azure deploys only the requested configurations
-
-This solution maintains your existing structure while adding the requested selection capability. You can now control RCG deployments by modifying the `selectedRCGs` parameter during pipeline execution.
+stages:
+- stage: DeployRCGs
+  jobs:
+  - job: Deploy
+    steps:
+    - task: AzureCLI@2
+      displayName: 'Deploy Selected RCGs'
+      inputs:
+        azureSubscription: 'your-service-connection'
+        scriptType: 'pscore'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          $selected = '$(selectedRCGsJson)' | ConvertFrom-Json
+          $rcgParams = $selected | ConvertTo-Json -Compress
+          
+          az deployment sub create `
+            --location eastus `
+            --template-file main.bicep `
+            --parameters selectedRCGs="$rcgParams"
