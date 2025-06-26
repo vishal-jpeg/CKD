@@ -1,3 +1,55 @@
+targetScope = 'subscription'
+
+// =======================
+// PARAMETERS
+// =======================
+@allowed([
+  'All'
+  'rcgsbdefault01'
+  'rcgsbdefault02'
+])
+param RCGName string = 'All'
+
+// =======================
+// IMPORT RCG DATA
+// =======================
+import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
+
+// =======================
+// COLLECT ALL RCG DEPLOYMENTS
+// =======================
+var firewallPoliciesDeploy = [
+  ...rcg.fwRCGDeploy
+]
+
+// =======================
+// DEPLOY FIREWALL POLICIES (ALL)
+// =======================
+module firewallPolicyParent 'Module/Firewall/firewallPolicy.bicep' = [
+  for policy in firewallPoliciesDeploy: {
+    name: 'firewallPolicy-${policy.existingFirewallPolicyName}'
+    params: {
+      existingFirewallPolicyName: policy.existingFirewallPolicyName
+      rgName: policy.rgName
+      subscriptionId: policy.subscriptionId
+    }
+  }
+]
+
+// =======================
+// FILTER RCGS FOR DEPLOYMENT
+// =======================
+var allRCGs = firewallPoliciesDeploy
+
+var filteredRCGs = [
+  for rcgItem in firewallPoliciesDeploy: if (RCGName == rcgItem.ruleCollectionGroups[0].name) {
+    rcgItem
+  }
+]
+
+// =======================
+// DEPLOY SELECTED RCGS BASED ON RUNTIME PARAM
+// =======================
 module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [
   for rulecollectionGroup in (RCGName == 'All' ? allRCGs : filteredRCGs): {
     name: 'ruleCollectionGroup-${uniqueString(rulecollectionGroup.existingFirewallPolicyName, rulecollectionGroup.ruleCollectionGroups[0].name)}'
