@@ -1,6 +1,18 @@
+trigger: none
+
+name: Deploy Firewall with RCG Selection
+
 parameters:
+- name: runValidation
+  displayName: "Run Validation and Scan"
+  type: boolean
+  default: true
+- name: templateFileDirectory
+  displayName: "Template File Directory"
+  type: string
+  default: ./CTB/TemplateFiles
 - name: selectedRCGs
-  displayName: 'Select RCGs to Deploy'
+  displayName: "Select RCGs to Deploy"
   type: object
   default:
     - rcg_sb_default_01
@@ -10,24 +22,101 @@ parameters:
     - rcg_sb_default_02
 
 variables:
-  selectedRCGsJson: ${{ convertToJson(parameters.selectedRCGs) }}
+  azureServiceConnection: 'ctb-ac-sb-connect'
+  location: 'canadacentral'
+  templateFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicep'
+  parameterFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicepparam'
+
+pool:
+  name: Merchantss
 
 stages:
-- stage: DeployRCGs
+- stage: Lint
   jobs:
-  - job: Deploy
+  - job: LintCode
+    displayName: Lint code
+    steps:
+    - script: |
+        az bicep build --file $(templateFile) --outdir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
+        dir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
+      name: LintBicepCode
+      displayName: Run Bicep linter
+      continueOnError: false
+
+- stage: ValidateAndDeploy
+  displayName: Validate and Deploy
+  dependsOn: Lint
+  jobs:
+  - job: Validate
+    displayName: Validate Configuration
     steps:
     - task: AzureCLI@2
-      displayName: 'Deploy Selected RCGs'
+      name: RunPreflightValidation
+      displayName: Run preflight validation
       inputs:
-        azureSubscription: 'your-service-connection'
-        scriptType: 'pscore'
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
         scriptLocation: 'inlineScript'
         inlineScript: |
-          $selected = '$(selectedRCGsJson)' | ConvertFrom-Json
-          $rcgParams = $selected | ConvertTo-Json -Compress
-          
-          az deployment sub create `
-            --location eastus `
-            --template-file main.bicep `
-            --parameters selectedRCGs="$rcgParams"
+          selectedRCGsJson='${{ convertToJson(parameters.selectedRCGs) }}'
+          az deployment sub validate --location $(location) \
+            --template-file $(templateFile) \
+            --parameters $(parameterFile) \
+            --parameters selectedRCGs="$selectedRCGsJson"
+
+    - task: AzureCLI@2
+      name: Preview
+      displayName: Run Preview
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          selectedRCGsJson='${{ convertToJson(parameters.selectedRCGs) }}'
+          az deployment sub what-if --location $(location) \
+            --template-file $(templateFile) \
+            --parameters $(parameterFile) \
+            --parameters selectedRCGs="$selectedRCGsJson"
+
+  - job: Deploy
+    displayName: Deploy Selected RCGs
+    condition: succeeded()
+    steps:
+    - task: AzureCLI@2
+      name: DeployFirewallRCGs
+      displayName: Deploy Firewall RCGs
+      inputs:
+        azureSubscription: $(azureServiceConnection)
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          selectedRCGsJson='${{ convertToJson(parameters.selectedRCGs) }}'
+          az deployment sub create --location $(location) \
+            --template-file $(templateFile) \
+            --parameters $(parameterFile) \
+            --parameters selectedRCGs="$selectedRCGsJson"
+
+
+targetScope = 'subscription'
+
+// New parameter for RCG selection
+param selectedRCGs array = []
+
+// Import RCG configurations
+import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
+
+// Filter RCGs based on selection
+var filteredRCGs = [for rcgKey in selectedRCGs : rcg.rcgMap[rcgKey]]
+
+// Deploy only selected RCGs
+module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [for item in filteredRCGs : {
+  name: 'ruleCollectionGroup-${uniqueString(item.existingFirewallPolicyName)}'
+  params: {
+    rulecollectionGroup: {
+      existingFirewallPolicyName: item.existingFirewallPolicyName
+      ruleCollectionGroups: item.ruleCollectionGroups
+      rgName: item.rgName
+      subscriptionId: item.subscriptionId
+    }
+  }
+}]
