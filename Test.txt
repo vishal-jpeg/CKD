@@ -1,122 +1,101 @@
-trigger: none
-
-name: Deploy Firewall with RCG Selection
-
-parameters:
-- name: runValidation
-  displayName: "Run Validation and Scan"
-  type: boolean
-  default: true
-- name: templateFileDirectory
-  displayName: "Template File Directory"
-  type: string
-  default: ./CTB/TemplateFiles
-- name: selectedRCGs
-  displayName: "Select RCGs to Deploy"
-  type: object
-  default:
-    - rcg_sb_default_01
-    - rcg_sb_default_02
-  values:
-    - rcg_sb_default_01
-    - rcg_sb_default_02
-
-variables:
-  azureServiceConnection: 'ctb-ac-sb-connect'
-  location: 'canadacentral'
-  templateFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicep'
-  parameterFile: './CTB/canada_central/common_services/common/Connect/Sandbox/Firewall/main.bicepparam'
-
-pool:
-  name: Merchantss
-
-stages:
-- stage: Lint
-  jobs:
-  - job: LintCode
-    displayName: Lint code
-    steps:
-    - script: |
-        az bicep build --file $(templateFile) --outdir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
-        dir ${{ parameters.templateFileDirectory }}/JsonFilesForScan
-      name: LintBicepCode
-      displayName: Run Bicep linter
-      continueOnError: false
-
-- stage: ValidateAndDeploy
-  displayName: Validate and Deploy
-  dependsOn: Lint
-  jobs:
-  - job: Validate
-    displayName: Validate Configuration
-    steps:
-    - task: AzureCLI@2
-      name: RunPreflightValidation
-      displayName: Run preflight validation
-      inputs:
-        azureSubscription: $(azureServiceConnection)
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          selectedRCGsJson='${{ convertToJson(parameters.selectedRCGs) }}'
-          az deployment sub validate --location $(location) \
-            --template-file $(templateFile) \
-            --parameters $(parameterFile) \
-            --parameters selectedRCGs="$selectedRCGsJson"
-
-    - task: AzureCLI@2
-      name: Preview
-      displayName: Run Preview
-      inputs:
-        azureSubscription: $(azureServiceConnection)
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          selectedRCGsJson='${{ convertToJson(parameters.selectedRCGs) }}'
-          az deployment sub what-if --location $(location) \
-            --template-file $(templateFile) \
-            --parameters $(parameterFile) \
-            --parameters selectedRCGs="$selectedRCGsJson"
-
-  - job: Deploy
-    displayName: Deploy Selected RCGs
-    condition: succeeded()
-    steps:
-    - task: AzureCLI@2
-      name: DeployFirewallRCGs
-      displayName: Deploy Firewall RCGs
-      inputs:
-        azureSubscription: $(azureServiceConnection)
-        scriptType: 'bash'
-        scriptLocation: 'inlineScript'
-        inlineScript: |
-          selectedRCGsJson='${{ convertToJson(parameters.selectedRCGs) }}'
-          az deployment sub create --location $(location) \
-            --template-file $(templateFile) \
-            --parameters $(parameterFile) \
-            --parameters selectedRCGs="$selectedRCGsJson"
-
-
 targetScope = 'subscription'
 
-// New parameter for RCG selection
-param selectedRCGs array = []
-
-// Import RCG configurations
+// Import configurations
+import * as fw from 'Module/importbicep.bicep'
 import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
 
-// Filter RCGs based on selection
-var filteredRCGs = [for rcgKey in selectedRCGs : rcg.rcgMap[rcgKey]]
+// Parameters
+@description('Resource type to deploy')
+param Resource string = 'Rule Collection Group'
 
-// Deploy only selected RCGs
-module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [for item in filteredRCGs : {
-  name: 'ruleCollectionGroup-${uniqueString(item.existingFirewallPolicyName)}'
+@description('Selected RCGs when deploying individually')
+param selectedRCGs array = []
+
+@description('Firewall policy configuration')
+param firewallPolicyName string = ''
+param RuleCollectionGroupName string = ''
+
+// Prepare deployment data
+var firewallDeploy = [...fw.fwDeploy]
+var allRCGKeys = keys(rcg.rcgMap)
+var filteredRCGs = [for rcgKey in selectedRCGs : rcg.rcgMap[rcgKey]]
+var effectiveRCGs = (Resource == 'Firewall Policy') ? allRCGKeys : selectedRCGs
+
+// Firewall Policy Deployment (Parent)
+module firewallPolicyParent '../../../Modules/Network/firewallPolicies.bicep' = [for (firewallPolicy, i) in firewallDeploy: if (Resource == 'Firewall Policy') {
+  scope: resourceGroup(firewallPolicy.subscriptionId, firewallPolicy.rgName)
+  name: '${firewallPolicy.name}-parent-01-main-${i}'
   params: {
-    rulecollectionGroup: {
-      existingFirewallPolicyName: item.existingFirewallPolicyName
-      ruleCollectionGroups: item.ruleCollectionGroups
-      rgName: item.rgName
-      subscriptionId: item.subscriptionId
+    name: 'acsbcofwpolicy-parent-01'
+    identity: firewallPolicy.identity ?? null
+    dnsSettings: {
+      dnsServers: firewallPolicy.dnsSettingsDnsServers ?? null
+      enableProxy: firewallPolicy.dnsSettingsEnableProxy ?? null
+      requireProxyForNetworkRules: firewallPolicy.dnsSettingsRequireProxyForNetworkRules ?? null
+    }
+    intrusionDetectionMode: firewallPolicy.intrusionDetectionMode ?? null
+    location: firewallPolicy.location ?? null
+    skuTier: firewallPolicy.skuTier ?? null
+    tags: firewallPolicy.tags ?? null
+    threatIntelMode: firewallPolicy.threatIntelMode ?? null
+    threatIntelAllowlist: {
+      fqdns: firewallPolicy.threatIntelAllowlistFqdns ?? null
+      ipAddresses: firewallPolicy.threatIntelAllowlistIpAddresses ?? null
+    }
+    allowSqlRedirect: firewallPolicy.allowSqlRedirect ?? null
+    insights: {
+      isEnabled: firewallPolicy.insightsIsEnabled ?? null
+      defaultWorkspaceId: firewallPolicy.defaultWorkspaceId ?? null
     }
   }
 }]
+
+// Firewall Policy Deployment (Base)
+module firewallPolicyBase '../../../Modules/Network/firewallPolicies.bicep' = [for (firewallPolicy, i) in firewallDeploy: if (Resource == 'Firewall Policy') {
+  scope: resourceGroup(firewallPolicy.subscriptionId, firewallPolicy.rgName)
+  name: '${firewallPolicy.name}-base-01-${i}'
+  params: {
+    name: 'acsbcofwpolicy-base-01'
+    identity: firewallPolicy.identity ?? null
+    dnsSettings: {
+      dnsServers: firewallPolicy.dnsSettingsDnsServers ?? null
+      enableProxy: firewallPolicy.dnsSettingsEnableProxy ?? null
+      requireProxyForNetworkRules: firewallPolicy.dnsSettingsRequireProxyForNetworkRules ?? null
+    }
+    parentPolicy: {
+      id: firewallPolicyParent[i].outputs.parentPolicyId
+    }
+    intrusionDetectionMode: firewallPolicy.intrusionDetectionMode ?? null
+    location: firewallPolicy.location ?? null
+    skuTier: firewallPolicy.skuTier ?? null
+    tags: firewallPolicy.tags ?? null
+    threatIntelMode: firewallPolicy.threatIntelMode ?? null
+    threatIntelAllowlist: {
+      fqdns: firewallPolicy.threatIntelAllowlistFqdns ?? null
+      ipAddresses: firewallPolicy.threatIntelAllowlistIpAddresses ?? null
+    }
+    allowSqlRedirect: firewallPolicy.allowSqlRedirect ?? null
+    insights: {
+      isEnabled: firewallPolicy.insightsIsEnabled ?? null
+      defaultWorkspaceId: firewallPolicy.defaultWorkspaceId ?? null
+    }
+  }
+}]
+
+// RCG Deployment
+module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [for (rcgKey, i) in effectiveRCGs: {
+  name: 'ruleCollectionGroup-${uniqueString(rcgKey)}-${i}'
+  params: {
+    rulecollectionGroup: {
+      existingFirewallPolicyName: rcg.rcgMap[rcgKey].existingFirewallPolicyName
+      ruleCollectionGroups: rcg.rcgMap[rcgKey].ruleCollectionGroups
+      rgName: rcg.rcgMap[rcgKey].rgName
+      subscriptionId: rcg.rcgMap[rcgKey].subscriptionId
+    }
+  }
+  dependsOn: Resource == 'Firewall Policy' ? [firewallPolicyBase] : []
+}]
+
+// Outputs
+output deployedFirewalls array = [for deployment in firewallPolicyBase: deployment.properties]
+output deployedRCGs array = [for deployment in firewallPolicyRuleCollectionGroups: deployment.properties]
