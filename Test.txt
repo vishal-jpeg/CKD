@@ -1,4 +1,4 @@
-Yes, here's a simpler and more streamlined approach using clear flags and minimal conditions:
+Here's the simplified version of your `main.bicep` using the approach you suggested with clear conditional deployment paths:
 
 ```bicep
 targetScope = 'subscription'
@@ -8,107 +8,125 @@ import * as fw from 'Module/importbicep.bicep'
 import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
 
 // Parameters
-param deployFirewall bool = false
-param deploySelectedRCGs bool = false
+@description('Select deployment mode')
+param Resource string = 'Full firewall + RCG' // Default to full deployment
+@description('Select RCGs when deploying individually')
 param selectedRCGs array = []
 
-// Deployment flags
-var shouldDeployFirewall = deployFirewall
-var shouldDeployAllRCGs = deployFirewall  // Auto-deploy RCGs with firewall
-var shouldDeploySelectedRCGs = deploySelectedRCGs
+// Get all RCG keys for full deployment
+var allRCGKeys = keys(rcg.rcgMap)
+var filteredRCGs = (Resource == 'Rule Collection Group') 
+  ? [for rcgKey in selectedRCGs: rcg.rcgMap[rcgKey]]
+  : [for rcgKey in allRCGKeys: rcg.rcgMap[rcgKey]]
 
-// Firewall deployment
-module firewallParent if (shouldDeployFirewall) = {
-  name: 'firewall-parent'
-  scope: resourceGroup(fw.fwDeploy[0].subscriptionId, fw.fwDeploy[0].rgName)
+// Firewall Deployment (only for full deployment)
+module firewallPolicyParent if (Resource == 'Full firewall + RCG') '../../../Modules/Network/firewallPolicies.bicep' = [for firewallPolicy in fw.fwDeploy: {
+  scope: resourceGroup(firewallPolicy.subscriptionId, firewallPolicy.rgName)
+  name: '${firewallPolicy.name}-parent-01-main'
   params: {
-    // Simplified parameters
     name: 'acsbcofwpolicy-parent-01'
-    location: fw.fwDeploy[0].location
-    skuTier: 'Standard'
+    identity: firewallPolicy.identity ?? null
+    dnsSettings: {
+      dnsServers: firewallPolicy.dnsSettingsDnsServers ?? null
+      enableProxy: firewallPolicy.dnsSettingsEnableProxy ?? null
+      requireProxyForNetworkRules: firewallPolicy.dnsSettingsRequireProxyForNetworkRules ?? null
+    }
+    intrusionDetectionMode: firewallPolicy.intrusionDetectionMode ?? null
+    location: firewallPolicy.location ?? null
+    skuTier: firewallPolicy.skuTier ?? null
+    tags: firewallPolicy.tags ?? null
+    threatIntelMode: firewallPolicy.threatIntelMode ?? null
+    threatIntelAllowlist: {
+      fqdns: firewallPolicy.threatIntelAllowlistFqdns ?? null
+      ipAddresses: firewallPolicy.threatIntelAllowlistIpAddresses ?? null
+    }
+    allowSqlRedirect: firewallPolicy.allowSqlRedirect ?? null
+    insights: {
+      isEnabled: firewallPolicy.insightsIsEnabled ?? null
+      defaultWorkspaceId: firewallPolicy.defaultWorkspaceId ?? null
+    }
   }
-}
+}]
 
-// RCG deployment
-module rcgDeployment if (shouldDeployAllRCGs || shouldDeploySelectedRCGs) = {
-  name: 'rcg-deployment'
+// Base Policy (only for full deployment)
+module firewallPolicyBase if (Resource == 'Full firewall + RCG') '../../../Modules/Network/firewallPolicies.bicep' = [for firewallPolicy in fw.fwDeploy: {
+  scope: resourceGroup(firewallPolicy.subscriptionId, firewallPolicy.rgName)
+  name: '${firewallPolicy.name}-base-01'
   params: {
-    ruleCollectionGroups: shouldDeployAllRCGs ? values(rcg.rcgMap) : [for key in selectedRCGs: rcg.rcgMap[key]]
+    name: 'acsbcofwpolicy-base-01'
+    parentPolicy: {
+      id: firewallPolicyParent[0].outputs.parentPolicyId
+    }
+    // Include all other parameters as above
+    // ...
   }
-  dependsOn: shouldDeployFirewall ? [firewallParent] : []
-}
+}]
+
+// RCG Deployment (for both modes)
+module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [for item in filteredRCGs: {
+  name: 'ruleCollectionGroup-${uniqueString(item.existingFirewallPolicyName)}'
+  params: {
+    rulecollectionGroup: {
+      existingFirewallPolicyName: item.existingFirewallPolicyName
+      ruleCollectionGroups: item.ruleCollectionGroups
+      rgName: item.rgName
+      subscriptionId: item.subscriptionId
+    }
+  }
+  dependsOn: (Resource == 'Full firewall + RCG') ? [firewallPolicyBase] : []
+}]
 
 // Outputs
-output firewallDeployed bool = shouldDeployFirewall
-output rcgCount int = length(rcgDeployment.params.ruleCollectionGroups)
+output deployedFirewall bool = (Resource == 'Full firewall + RCG')
+output deployedRCGs array = [for rcg in filteredRCGs: rcg.name]
 ```
 
 ### Corresponding Pipeline Changes:
 
 ```yaml
 parameters:
-- name: deployFirewall
-  displayName: 'Deploy Firewall + All RCGs'
-  type: boolean
-  default: false
-  
-- name: deploySelectedRCGs
-  displayName: 'Deploy Selected RCGs Only'
-  type: boolean
-  default: false
-  
+- name: Resource
+  displayName: 'Deployment Mode'
+  type: string
+  default: 'Full firewall + RCG'
+  values:
+  - 'Full firewall + RCG'
+  - 'Rule Collection Group'
+
 - name: selectedRCGs
-  displayName: 'Select RCGs'
+  displayName: 'Select RCGs (for Rule Collection Group mode)'
   type: object
   default: []
   values: ['rcg-sb-default-01', 'rcg-sb-default-02']
 ```
 
-### Key Improvements:
+### Key Benefits:
 
 1. **Simplified Logic**:
-   - Uses clear boolean flags instead of string comparisons
-   - `deployFirewall` automatically includes all RCGs
+   - Only 2 clear deployment modes
+   - No complex nested conditions
 
-2. **Reduced Complexity**:
-   - Single RCG deployment module instead of loop
-   - Automatic selection between all vs selected RCGs
+2. **Automatic RCG Handling**:
+   - Full deployment → All RCGs
+   - RCG-only → Only selected RCGs
 
-3. **User-Friendly Pipeline**:
-   - Clear checkbox options instead of dropdown
-   - Mutually exclusive options prevent confusion
+3. **Clean Dependencies**:
+   - RCGs automatically wait for firewall in full deployment mode
 
-4. **Maintenance Benefits**:
-   - 50% less code
-   - No array comprehensions
-   - No index management
+4. **Maintenance Friendly**:
+   - Clear separation of deployment paths
+   - Easy to add new RCGs
 
 ### Deployment Scenarios:
 
-1. **Deploy Firewall + All RCGs**:
-   - Check "Deploy Firewall + All RCGs"
-   - Leave "Deploy Selected RCGs Only" unchecked
-   - RCG selection ignored
+1. **Full Deployment** (`Resource == 'Full firewall + RCG'`):
+   - Deploys firewall parent + base policies
+   - Deploys ALL RCGs automatically
+   - RCGs wait for firewall completion
 
-2. **Deploy Specific RCGs**:
-   - Check "Deploy Selected RCGs Only"
-   - Select desired RCGs
-   - Leave firewall checkbox unchecked
+2. **RCG-Only Deployment** (`Resource == 'Rule Collection Group'`):
+   - Skips firewall deployment
+   - Only deploys selected RCGs
+   - No dependencies
 
-### How It Works:
-
-1. **Firewall Deployment**:
-   ```mermaid
-   graph LR
-     A[deployFirewall=true] --> B[Deploy Firewall]
-     B --> C[Deploy All RCGs]
-   ```
-
-2. **RCG-Only Deployment**:
-   ```mermaid
-   graph LR
-     D[deploySelectedRCGs=true] --> E[Deploy Selected RCGs]
-     E --> F[Firewall Not Deployed]
-   ```
-
-This approach maintains all functionality while significantly simplifying both the Bicep code and pipeline interface. The key simplification comes from eliminating loops and complex conditionals in favor of clear boolean flags.
+This matches your requested approach while keeping the code clean and maintainable. The pipeline interface is also simpler with just two clear options.
