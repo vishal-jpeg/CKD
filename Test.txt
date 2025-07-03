@@ -1,132 +1,37 @@
-Here's the simplified version of your `main.bicep` using the approach you suggested with clear conditional deployment paths:
-
-```bicep
 targetScope = 'subscription'
 
-// Import configurations
-import * as fw from 'Module/importbicep.bicep'
-import * as rcg from 'Module/RCG/rcg-importbicep.bicep'
+// Imports
+import { fwDeploy } from 'Module/importbicep.bicep'
+import { rcgMap } from 'Module/RCG/rcg-import.bicep'
 
 // Parameters
-@description('Select deployment mode')
-param Resource string = 'Full firewall + RCG' // Default to full deployment
-@description('Select RCGs when deploying individually')
+param Resource string = ''
+param RuleCollectionGroupName string = ''
+param firewallPolicyName string = ''
 param selectedRCGs array = []
 
-// Get all RCG keys for full deployment
-var allRCGKeys = keys(rcg.rcgMap)
-var filteredRCGs = (Resource == 'Rule Collection Group') 
-  ? [for rcgKey in selectedRCGs: rcg.rcgMap[rcgKey]]
-  : [for rcgKey in allRCGKeys: rcg.rcgMap[rcgKey]]
+// Variables
+var firewallDeploy = fwDeploy
+var selectedRCGConfigs = [for rcgKey in selectedRCGs : rcgMap[rcgKey]]
 
-// Firewall Deployment (only for full deployment)
-module firewallPolicyParent if (Resource == 'Full firewall + RCG') '../../../Modules/Network/firewallPolicies.bicep' = [for firewallPolicy in fw.fwDeploy: {
-  scope: resourceGroup(firewallPolicy.subscriptionId, firewallPolicy.rgName)
-  name: '${firewallPolicy.name}-parent-01-main'
-  params: {
-    name: 'acsbcofwpolicy-parent-01'
-    identity: firewallPolicy.identity ?? null
-    dnsSettings: {
-      dnsServers: firewallPolicy.dnsSettingsDnsServers ?? null
-      enableProxy: firewallPolicy.dnsSettingsEnableProxy ?? null
-      requireProxyForNetworkRules: firewallPolicy.dnsSettingsRequireProxyForNetworkRules ?? null
+// Firewall Policy Deployment
+module firewallPolicy 'br/modules:network/firewall-policy:0.2' = if (Resource == 'Firewall Policy') {
+  // ... existing firewall params ...
+}
+
+// Corrected RCG Deployment
+module rcgDeployment 'br/modules:network/firewall-policy/rule-collection-group:0.1' = 
+  [for rcgConfig in selectedRCGConfigs: if (Resource == 'Rule Collection Group' || Resource == 'Firewall Policy') {
+    scope: resourceGroup(rcgConfig.existingSubscriptionId, rcgConfig.existingResourceGroupName)
+    name: 'rcg-${uniqueString(rcgConfig.existingFirewallPolicyName, rcgConfig.ruleCollectionGroups[0].name)}'
+    params: {
+      ruleCollectionGroup: {
+        existingFirewallPolicyName: rcgConfig.existingFirewallPolicyName
+        existingResourceGroupName: rcgConfig.existingResourceGroupName
+        existingSubscriptionId: rcgConfig.existingSubscriptionId
+        properties: {
+          ruleCollectionGroups: rcgConfig.ruleCollectionGroups
+        }
+      }
     }
-    intrusionDetectionMode: firewallPolicy.intrusionDetectionMode ?? null
-    location: firewallPolicy.location ?? null
-    skuTier: firewallPolicy.skuTier ?? null
-    tags: firewallPolicy.tags ?? null
-    threatIntelMode: firewallPolicy.threatIntelMode ?? null
-    threatIntelAllowlist: {
-      fqdns: firewallPolicy.threatIntelAllowlistFqdns ?? null
-      ipAddresses: firewallPolicy.threatIntelAllowlistIpAddresses ?? null
-    }
-    allowSqlRedirect: firewallPolicy.allowSqlRedirect ?? null
-    insights: {
-      isEnabled: firewallPolicy.insightsIsEnabled ?? null
-      defaultWorkspaceId: firewallPolicy.defaultWorkspaceId ?? null
-    }
-  }
 }]
-
-// Base Policy (only for full deployment)
-module firewallPolicyBase if (Resource == 'Full firewall + RCG') '../../../Modules/Network/firewallPolicies.bicep' = [for firewallPolicy in fw.fwDeploy: {
-  scope: resourceGroup(firewallPolicy.subscriptionId, firewallPolicy.rgName)
-  name: '${firewallPolicy.name}-base-01'
-  params: {
-    name: 'acsbcofwpolicy-base-01'
-    parentPolicy: {
-      id: firewallPolicyParent[0].outputs.parentPolicyId
-    }
-    // Include all other parameters as above
-    // ...
-  }
-}]
-
-// RCG Deployment (for both modes)
-module firewallPolicyRuleCollectionGroups 'Module/RCG/rcg.bicep' = [for item in filteredRCGs: {
-  name: 'ruleCollectionGroup-${uniqueString(item.existingFirewallPolicyName)}'
-  params: {
-    rulecollectionGroup: {
-      existingFirewallPolicyName: item.existingFirewallPolicyName
-      ruleCollectionGroups: item.ruleCollectionGroups
-      rgName: item.rgName
-      subscriptionId: item.subscriptionId
-    }
-  }
-  dependsOn: (Resource == 'Full firewall + RCG') ? [firewallPolicyBase] : []
-}]
-
-// Outputs
-output deployedFirewall bool = (Resource == 'Full firewall + RCG')
-output deployedRCGs array = [for rcg in filteredRCGs: rcg.name]
-```
-
-### Corresponding Pipeline Changes:
-
-```yaml
-parameters:
-- name: Resource
-  displayName: 'Deployment Mode'
-  type: string
-  default: 'Full firewall + RCG'
-  values:
-  - 'Full firewall + RCG'
-  - 'Rule Collection Group'
-
-- name: selectedRCGs
-  displayName: 'Select RCGs (for Rule Collection Group mode)'
-  type: object
-  default: []
-  values: ['rcg-sb-default-01', 'rcg-sb-default-02']
-```
-
-### Key Benefits:
-
-1. **Simplified Logic**:
-   - Only 2 clear deployment modes
-   - No complex nested conditions
-
-2. **Automatic RCG Handling**:
-   - Full deployment → All RCGs
-   - RCG-only → Only selected RCGs
-
-3. **Clean Dependencies**:
-   - RCGs automatically wait for firewall in full deployment mode
-
-4. **Maintenance Friendly**:
-   - Clear separation of deployment paths
-   - Easy to add new RCGs
-
-### Deployment Scenarios:
-
-1. **Full Deployment** (`Resource == 'Full firewall + RCG'`):
-   - Deploys firewall parent + base policies
-   - Deploys ALL RCGs automatically
-   - RCGs wait for firewall completion
-
-2. **RCG-Only Deployment** (`Resource == 'Rule Collection Group'`):
-   - Skips firewall deployment
-   - Only deploys selected RCGs
-   - No dependencies
-
-This matches your requested approach while keeping the code clean and maintainable. The pipeline interface is also simpler with just two clear options.
