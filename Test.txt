@@ -1,21 +1,31 @@
-// Firewall Policy (only deploys when requested)
-module firewallPolicy 'br/modules:network/firewall-policy:0.2' = 
-  if (Resource == 'Firewall Policy') {
-    scope: resourceGroup(firewallDeploy.subscriptionId, firewallDeploy.rgName)
-    // ... params ...
+@export()
+var firewallDeploy = {
+  name: 'acsbcofwpolicy'
+  insightsIsEnabled: true
+  parentPolicy: true
+  rgName: 'ctb-ac-sb-rg-co-vwan-01'
+  location: 'canadacentral'
+  subscriptionId: '35909b9b-9868-4f63-b66b-d3178b513770'
+  dnsSettingsEnableProxy: true
+  skuTier: 'Premium'
+  threatIntelMode: 'Alert'
+  dnsSettingsRequireProxyForNetworkRules: false
+  dnsSettingsDnsServers: [
+    '10.100.4.4'
+  ]
+  identity: {
+    userAssignedResourceIds: [
+      '/subscriptions/35909b9b-9868-4f63-b66b-d3178b513770/resourceGroups/ctb-ac-sb-rg-co-kv-01/providers/Microsoft.ManagedIdentity/userAssignedIdentities/your-identity-name'
+    ]
+    systemAssigned: false
   }
-
-// RCGs (only deploy when explicitly requested)
-module rcgDeployment 'br/modules:network/firewall-policy/rule-collection-group:0.1' = 
-  [for rcgConfig in selectedRCGConfigs: if (Resource == 'Rule Collection Group') {
-    scope: resourceGroup(rcgConfig.existingSubscriptionId, rcgConfig.existingResourceGroupName)
-    name: 'rcg-${uniqueString(rcgConfig.existingFirewallPolicyName, rcgConfig.ruleCollectionGroups[0].name)}'
-    params: {
-      existingFirewallPolicyName: rcgConfig.existingFirewallPolicyName
-      existingResourceGroupName: rcgConfig.existingResourceGroupName
-      existingSubscriptionId: rcgConfig.existingSubscriptionId
-      name: rcgConfig.ruleCollectionGroups[0].name
-      priority: rcgConfig.ruleCollectionGroups[0].priority
-      ruleCollections: rcgConfig.ruleCollectionGroups[0].ruleCollections
-    }
-  }]
+  intrusionDetectionMode: 'Deny'
+  tags: {
+    ApplicationName: 'Azure Premium Firewall'
+  }
+  // Add null properties for optional values
+  threatIntelAllowlistFqdns: null
+  threatIntelAllowlistIpAddresses: null
+  allowSqlRedirect: null
+  defaultWorkspaceId: null
+}
