@@ -1,100 +1,21 @@
-targetScope = 'subscription'
+// Firewall Policy (only deploys when requested)
+module firewallPolicy 'br/modules:network/firewall-policy:0.2' = 
+  if (Resource == 'Firewall Policy') {
+    scope: resourceGroup(firewallDeploy.subscriptionId, firewallDeploy.rgName)
+    // ... params ...
+  }
 
-// Imports
-import { fwDeploy } from 'Module/importbicep.bicep'
-import { rcgMap } from 'Module/RCG/rcg-import.bicep'
-
-// Parameters
-param Resource string = ''
-param RuleCollectionGroupName string = ''
-param firewallPolicyName string = ''
-param selectedRCGs array = []
-
-// Variables
-var firewallDeploy = fwDeploy
-var selectedRCGConfigs = [for rcgKey in selectedRCGs : rcgMap[rcgKey]]
-
-// Firewall Policy Deployment
-module firewallPolicy 'br/modules:network/firewall-policy:0.2' = if (Resource == 'Firewall Policy') {
-  // ... existing firewall params ...
-}
-
-// CORRECTED RCG Deployment
+// RCGs (only deploy when explicitly requested)
 module rcgDeployment 'br/modules:network/firewall-policy/rule-collection-group:0.1' = 
-  [for rcgConfig in selectedRCGConfigs: for (rcg, index) in rcgConfig.ruleCollectionGroups: {
+  [for rcgConfig in selectedRCGConfigs: if (Resource == 'Rule Collection Group') {
     scope: resourceGroup(rcgConfig.existingSubscriptionId, rcgConfig.existingResourceGroupName)
-    name: 'rcg-${index}-${uniqueString(rcgConfig.existingFirewallPolicyName)}'
+    name: 'rcg-${uniqueString(rcgConfig.existingFirewallPolicyName, rcgConfig.ruleCollectionGroups[0].name)}'
     params: {
       existingFirewallPolicyName: rcgConfig.existingFirewallPolicyName
       existingResourceGroupName: rcgConfig.existingResourceGroupName
       existingSubscriptionId: rcgConfig.existingSubscriptionId
-      name: rcg.name
-      priority: rcg.priority
-      ruleCollections: rcg.ruleCollections
+      name: rcgConfig.ruleCollectionGroups[0].name
+      priority: rcgConfig.ruleCollectionGroups[0].priority
+      ruleCollections: rcgConfig.ruleCollectionGroups[0].ruleCollections
     }
   }]
-
-@export()
-var rcg_sb_default_01 = {
-  existingFirewallPolicyName: 'acsbcofwpolicy-parent-01'
-  existingResourceGroupName: 'ctb-ac-sb-rg-co-vwan-01'
-  existingSubscriptionId: '35909b9b-9868-4f63-b66b-d3178b513770'
-  ruleCollectionGroups: [
-    {
-      name: 'DefaultNetworkRules'
-      priority: 100
-      ruleCollections: [
-        {
-          name: 'Allow-DNS'
-          ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
-          action: { type: 'Allow' }
-          priority: 100
-          rules: [
-            {
-              name: 'Allow-Outbound-DNS'
-              ruleType: 'NetworkRule'
-              ipProtocols: ['UDP']
-              sourceAddresses: ['10.0.0.0/8']
-              destinationAddresses: ['8.8.8.8']
-              destinationPorts: ['53']
-            }
-          ]
-        },
-        {
-          name: 'Deny-SocialMedia'
-          ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
-          action: { type: 'Deny' }
-          priority: 200
-          rules: [
-            {
-              name: 'Block-Facebook'
-              ruleType: 'ApplicationRule'
-              protocols: [{ port: 443, protocolType: 'Https' }]
-              targetFqdns: ['*.facebook.com', '*.fbcdn.net']
-            }
-          ]
-        }
-      ]
-    },
-    {
-      name: 'DefaultApplicationRules'
-      priority: 200
-      ruleCollections: [
-        {
-          name: 'Allow-Azure'
-          ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
-          action: { type: 'Allow' }
-          priority: 100
-          rules: [
-            {
-              name: 'Allow-Azure-Services'
-              ruleType: 'ApplicationRule'
-              protocols: [{ port: 443, protocolType: 'Https' }]
-              targetFqdns: ['*.azure.com', '*.microsoft.com']
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
