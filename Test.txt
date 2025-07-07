@@ -1,31 +1,73 @@
-@export()
-var firewallDeploy = {
-  name: 'acsbcofwpolicy'
-  insightsIsEnabled: true
-  parentPolicy: true
-  rgName: 'ctb-ac-sb-rg-co-vwan-01'
-  location: 'canadacentral'
-  subscriptionId: '35909b9b-9868-4f63-b66b-d3178b513770'
-  dnsSettingsEnableProxy: true
-  skuTier: 'Premium'
-  threatIntelMode: 'Alert'
-  dnsSettingsRequireProxyForNetworkRules: false
-  dnsSettingsDnsServers: [
-    '10.100.4.4'
-  ]
-  identity: {
-    userAssignedResourceIds: [
-      '/subscriptions/35909b9b-9868-4f63-b66b-d3178b513770/resourceGroups/ctb-ac-sb-rg-co-kv-01/providers/Microsoft.ManagedIdentity/userAssignedIdentities/your-identity-name'
-    ]
-    systemAssigned: false
+targetScope = 'subscription'
+
+import { fwDeploy } from 'Module/importbicep.bicep'
+import { rcgMap } from 'Module/RCG/rcg-importbicep.bicep'
+
+param Resource string
+param RuleCollectionGroupName string
+param firewallPolicyName string
+param selectedRCGs array = []
+
+var firewallDeploy = fwDeploy
+
+var filteredRCGS = [for rcgKey in selectedRCGs: rcgMap[rcgKey]]
+var allRCGS = [for rcgKey in selectedRCGs: rcgMap[rcgKey]]
+
+@batchSize(1)
+module firewallPolicyRuleCollectionGroups 'br/public:avm/res/network/firewall-policy/rule-collection-group:0.1.0' = [
+  for rcgItem in filteredRCGS: if (Resource == 'Rule Collection Group')
+  for rcg in rcgItem.ruleCollectionGroups
+]: {
+  name: 'rcg-${uniqueString(rcgItem.existingFirewallPolicyName, rcg.name)}'
+  scope: resourceGroup(rcgItem.subscriptionId, rcgItem.rgName)
+  params: {
+    firewallPolicyName: rcgItem.existingFirewallPolicyName
+    name: rcg.name
+    priority: rcg.priority
+    ruleCollections: rcg.ruleCollections
   }
-  intrusionDetectionMode: 'Deny'
-  tags: {
-    ApplicationName: 'Azure Premium Firewall'
+}
+
+// Firewall Policy modules (unchanged)
+module firewallPolicyParent 'br/modules:network/firewall-policy:0.2' if (Resource == 'Firewall Policy') {
+  scope: resourceGroup(firewallDeploy.subscriptionId, firewallDeploy.rgName)
+  name: '${firewallDeploy.name}-parent-01-main'
+  params: {
+    name: 'acsbcofwpolicy-parent-01'
+    managedIdentities: firewallDeploy.identity ?? null
+    servers: firewallDeploy.dnsSettingsDnsServers ?? null
+    enableProxy: firewallDeploy.dnsSettingsEnableProxy ?? null
+    mode: firewallDeploy.intrusionDetectionMode ?? null
+    location: firewallDeploy.location ?? null
+    tier: firewallDeploy.skuTier ?? null
+    tags: firewallDeploy.tags ?? null
+    threatIntelMode: firewallDeploy.threatIntelMode ?? null
+    fqdns: firewallDeploy.threatIntelAllowlistFqdns ?? null
+    ipAddresses: firewallDeploy.threatIntelAllowlistIpAddresses ?? null
+    allowSqlRedirect: firewallDeploy.allowSqlRedirect ?? null
+    insightsIsEnabled: firewallDeploy.insightsIsEnabled ?? null
+    defaultworkspaceId: firewallDeploy.defaultworkspaceId ?? null
   }
-  // Add null properties for optional values
-  threatIntelAllowlistFqdns: null
-  threatIntelAllowlistIpAddresses: null
-  allowSqlRedirect: null
-  defaultWorkspaceId: null
+}
+
+module firewallPolicyBase 'br/modules:network/firewall-policy:0.2' if (Resource == 'Firewall Policy') {
+  scope: resourceGroup(firewallDeploy.subscriptionId, firewallDeploy.rgName)
+  name: '${firewallDeploy.name}-base-01'
+  params: {
+    name: 'acsbcofwpolicy-base-01'
+    managedIdentities: firewallDeploy.identity ?? null
+    servers: firewallDeploy.dnsSettingsDnsServers ?? null
+    enableProxy: firewallDeploy.dnsSettingsEnableProxy ?? null
+    mode: firewallDeploy.intrusionDetectionMode ?? null
+    location: firewallDeploy.location ?? null
+    tier: firewallDeploy.skuTier ?? null
+    tags: firewallDeploy.tags
+    basePolicyResourceId: firewallPolicyParent.outputs.resourceId
+    threatIntelMode: firewallDeploy.threatIntelMode ?? null
+    fqdns: firewallDeploy.threatIntelAllowlistFqdns ?? null
+    ipAddresses: firewallDeploy.threatIntelAllowlistIpAddresses ?? null
+    allowSqlRedirect: firewallDeploy.allowSqlRedirect ?? null
+    insightsIsEnabled: firewallDeploy.insightsIsEnabled ?? null
+    defaultworkspaceId: firewallDeploy.defaultworkspaceId ?? null
+  }
 }
