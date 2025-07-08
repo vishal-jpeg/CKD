@@ -1,57 +1,45 @@
-To support the detailed rule structure in your RCG definitions, we need to enhance the `ruleCollectionGroupType` with comprehensive type definitions. Here's the updated solution:
-
-### 1. Enhanced rcg.bicep with Complete Type Definitions
-```bicep
 targetScope = 'subscription'
-
-// Define complete type structure
-@export()
-type ruleType = {
-  name: string
-  ruleType: string
-  description?: string
-  ipProtocols?: string[]
-  sourceAddresses?: string[]
-  sourceIpGroups?: string[]
-  destinationAddresses?: string[]
-  destinationIpGroups?: string[]
-  destinationPorts?: string[]
-  destinationFqdns?: string[]
-  translatedAddress?: string
-  translatedPort?: string
-  fqdnTags?: string[]
-  targetUrls?: string[]
-}
-
-@export()
-type ruleCollectionType = {
-  name: string
-  priority: int
-  ruleCollectionType: string
-  action: {
-    type: string
-  }
-  rules: ruleType[]
-}
-
-@export()
-type ruleCollectionGroupItemType = {
-  name: string
-  priority: int
-  ruleCollections: ruleCollectionType[]
-}
 
 @export()
 type ruleCollectionGroupType = {
-  ruleCollectionGroups: ruleCollectionGroupItemType[]
   existingFirewallPolicyName: string
   rgName: string
   subscriptionId: string
+  ruleCollectionGroups: {
+    name: string
+    priority: int
+    ruleCollections: {
+      name: string
+      priority: int
+      ruleCollectionType: string
+      action: {
+        type: string
+      }
+      rules: {
+        name: string
+        ruleType: string
+        description?: string
+        ipProtocols?: string[]  // Changed to array
+        sourceAddresses?: string[]
+        sourceIpGroups?: string[]  // Fixed casing
+        destinationAddresses?: string[]
+        destinationIpGroups?: string[]  // Fixed casing
+        destinationPorts?: string[]
+        destinationFqdns?: string[]
+        fqdnTags?: string[]
+        protocols?: {  // Added for application rules
+          port: int
+          protocolType: string
+        }[]
+        translatedAddress?: string  // For NAT rules
+        translatedPort?: string     // For NAT rules
+      }[]
+    }[]
+  }[]
 }
 
 param ruleCollectionGroup ruleCollectionGroupType
 
-// Deploy each rule collection group using AVM module
 module firewallPolicyRuleCollectionGroups 'br/public:avm/res/network/firewall-policy/rule-collection-group:1.0.1' = [for rcg in ruleCollectionGroup.ruleCollectionGroups: {
   name: 'rulecollectionGroup-${uniqueString(ruleCollectionGroup.existingFirewallPolicyName, rcg.name)}'
   scope: resourceGroup(ruleCollectionGroup.subscriptionId, ruleCollectionGroup.rgName)
@@ -59,181 +47,6 @@ module firewallPolicyRuleCollectionGroups 'br/public:avm/res/network/firewall-po
     firewallPolicyName: ruleCollectionGroup.existingFirewallPolicyName
     name: rcg.name
     priority: rcg.priority
-    ruleCollections: rcg.ruleCollections
+    ruleCollections: rcg.ruleCollections  // Correct property name
   }
 }]
-```
-
-### 2. Updated rcg-sb-default-01.bicep with Full Structure
-```bicep
-import { 
-  ruleCollectionGroupType,
-  ruleCollectionGroupItemType,
-  ruleCollectionType,
-  ruleType 
-} from 'rcg.bicep'
-
-@export()
-var rcg_sb_default_01 ruleCollectionGroupType = {
-  existingFirewallPolicyName: 'acsbcofwpolicy-parent-01'
-  rgName: 'ctb-ac-sb-rg-co-vwan-01'
-  subscriptionId: '35909b9b-9868-4f63-b66b-d3178b513770'
-  ruleCollectionGroups: [
-    {
-      name: 'rcg-sb-default-01'
-      priority: 3300
-      ruleCollections: [
-        {
-          name: 'ar_sb_co_internet'
-          priority: 3302
-          ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
-          action: {
-            type: 'Allow'
-          }
-          rules: [
-            {
-              name: 'allow-https-outbound'
-              ruleType: 'ApplicationRule'
-              protocols: [
-                {
-                  port: 443
-                  protocolType: 'Https'
-                }
-              ]
-              sourceAddresses: ['10.0.0.0/8']
-              destinationFqdns: ['*.microsoft.com']
-            }
-          ]
-        }
-      ]
-    },
-    {
-      name: 'rcg-sb-infra-01'
-      priority: 2100
-      ruleCollections: [
-        {
-          name: 'nr_co_internal'
-          priority: 2101
-          ruleCollectionType: 'FirewallPolicyFilterRuleCollection'
-          action: {
-            type: 'Allow'
-          }
-          rules: [
-            {
-              name: 'az_co-onprem-all_to_co-cloud-all-icmp'
-              ruleType: 'NetworkRule'
-              description: 'Common ICMP rule'
-              ipProtocols: ['ICMP']
-              sourceIpGroups: [
-                '/subscriptions/92/resourceGroups/onprem-ipgroups/providers/Microsoft.Network/ipGroups/onprem-all'
-              ]
-              destinationIpGroups: [
-                '/subscriptions/92/resourceGroups/cloud-ipgroups/providers/Microsoft.Network/ipGroups/cloud-all'
-              ]
-              destinationPorts: ['*']
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-### 3. Enhanced rcg-importbicep.bicep
-```bicep
-import { rcg_sb_default_01 } from 'rcg-sb-default-01.bicep'
-import { rcg_sb_default_02 } from 'rcg-sb-default-02.bicep'
-
-@export()
-var rcgMap = {
-  'rcg-sb-default-01': rcg_sb_default_01
-  'rcg-sb-default-02': rcg_sb_default_02
-}
-```
-
-### Key Improvements:
-
-1. **Complete Type Hierarchy**:
-   - Added four distinct, exportable types:
-     - `ruleType`: Defines individual firewall rules
-     - `ruleCollectionType`: Defines collections of rules
-     - `ruleCollectionGroupItemType`: Defines RCG items
-     - `ruleCollectionGroupType`: Top-level structure
-
-2. **Comprehensive Rule Properties**:
-   ```bicep
-   type ruleType = {
-     name: string
-     ruleType: string
-     description?: string
-     ipProtocols?: string[]
-     sourceAddresses?: string[]
-     sourceIpGroups?: string[]
-     destinationAddresses?: string[]
-     destinationIpGroups?: string[]
-     destinationPorts?: string[]
-     destinationFqdns?: string[]
-     translatedAddress?: string
-     translatedPort?: string
-     fqdnTags?: string[]
-     targetUrls?: string[]
-   }
-   ```
-
-3. **Support for All Rule Types**:
-   - Network rules (ipProtocols, ports)
-   - Application rules (protocols, fqdns)
-   - NAT rules (translatedAddress, translatedPort)
-   - Web categories (fqdnTags, targetUrls)
-
-4. **Flexible Structure**:
-   - Optional properties using `?` syntax
-   - Support for both IP addresses and IP groups
-   - Compatibility with Azure Firewall's full capabilities
-
-### Usage Notes:
-
-1. **For Network Rules**:
-   ```bicep
-   rules: [
-     {
-       name: 'ssh-rule'
-       ruleType: 'NetworkRule'
-       ipProtocols: ['TCP']
-       sourceAddresses: ['192.168.1.0/24']
-       destinationPorts: ['22']
-     }
-   ]
-   ```
-
-2. **For Application Rules**:
-   ```bicep
-   rules: [
-     {
-       name: 'web-https'
-       ruleType: 'ApplicationRule'
-       protocols: [
-         { port: 443, protocolType: 'Https' }
-       ]
-       destinationFqdns: ['*.contoso.com']
-     }
-   ]
-   ```
-
-3. **For NAT Rules**:
-   ```bicep
-   rules: [
-     {
-       name: 'web-dnat'
-       ruleType: 'NatRule'
-       ipProtocols: ['TCP']
-       destinationAddresses: ['203.0.113.1']
-       destinationPorts: ['80']
-       translatedAddress: '10.1.2.3'
-       translatedPort: '8080'
-     }
-   ]
-   ```
-
-This enhanced type system provides full support for all Azure Firewall rule types while maintaining type safety and validation. The structure now matches the Azure Resource Manager schema exactly, ensuring compatibility with the AVM module.
