@@ -1,19 +1,77 @@
-🔍 Fetching permissions for subject: vssgp.abc...
+# ------------------------
+# CONFIGURATION SECTION
+# ------------------------
 
-📋 All permissions returned by Azure CLI:
-permissionDisplayName                   allow deny
-----------------------                  ----- ----
-Advanced Security: manage settings       1     0
-Advanced Security: view alerts           0     0
+$org = "https://dev.azure.com/cantirebank/"
+$namespaceId = "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87"  # Azure Repos Git
+$projectId = $ProjectDetails.id  # Get via `az devops project show`
+$repoId = $repold                # Get via `az repos show`
+$token = "repoV2/$projectId/$repoId"  # Target resource
+$subject = $groupDescriptor     # AAD or ADO group descriptor (vssgp.xxx)
 
-🔎 Auditing permission: Advanced Security: manage and dismiss alerts
-  ❌ [Advanced Security: manage and dismiss alerts] is NOT SET and not known to be inherited
+# Permissions to audit
+$permissionsToCheck = @(
+    "Advanced Security: manage and dismiss alerts",
+    "Advanced Security: manage settings",
+    "Advanced Security: view alerts",
+    "Read"
+)
 
-🔎 Auditing permission: Advanced Security: manage settings
-  ✅ [Advanced Security: manage settings] is EXPLICITLY ALLOWED (Allow = 1)
+# Known inherited mappings (manual fallback)
+$inheritanceMap = @{
+    "Advanced Security: view alerts" = "Repository Security Readers"
+    "Read" = "Repository Security Readers"
+}
 
-🔎 Auditing permission: Advanced Security: view alerts
-  📥 [Advanced Security: view alerts] is INHERITED via [Repository Security Readers]
+# ------------------------
+# FETCH PERMISSIONS
+# ------------------------
 
-🔎 Auditing permission: Read
-  📥 [Read] is INHERITED via [Repository Security Readers]
+Write-Host "🔍 Fetching permissions for subject: $subject"
+$jsonText = az devops security permission show `
+    --namespace-id  $namespaceId `
+    --subject       $subject `
+    --token         $token `
+    --organization  $org `
+    --output        json
+
+if (!$jsonText) {
+    Write-Error "❌ No permission data returned. Check subject or token values."
+    exit 1
+}
+
+$allPermissions = $jsonText | ConvertFrom-Json
+
+# ------------------------
+# DEBUG: Print all returned permissions
+# ------------------------
+
+Write-Host "`n📋 All permissions returned by Azure CLI:"
+$allPermissions | Format-Table permissionDisplayName, allow, deny
+
+# ------------------------
+# AUDIT EACH TARGET PERMISSION
+# ------------------------
+
+foreach ($permName in $permissionsToCheck) {
+    Write-Host "`n🔎 Auditing permission: $permName"
+
+    $match = $allPermissions | Where-Object { $_.permissionDisplayName -eq $permName }
+
+    if ($match) {
+        if ($match.allow -gt 0) {
+            Write-Host "  ✅ [$permName] is EXPLICITLY ALLOWED (Allow = $($match.allow))"
+        } elseif ($match.deny -gt 0) {
+            Write-Host "  🚫 [$permName] is EXPLICITLY DENIED (Deny = $($match.deny))"
+        } else {
+            Write-Host "  ⚠️ [$permName] exists but not explicitly allowed or denied"
+        }
+    }
+    elseif ($inheritanceMap.ContainsKey($permName)) {
+        $viaGroup = $inheritanceMap[$permName]
+        Write-Host "  📥 [$permName] is INHERITED via [$viaGroup]"
+    }
+    else {
+        Write-Host "  ❌ [$permName] is NOT SET and not known to be inherited"
+    }
+}
