@@ -1,32 +1,3 @@
-# Your existing call (make sure you include --output json)
-$permissionsShow = az devops security permission show-namespace-id `
-  --namespace-id  "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
-  --subject       $groupDescriptor `
-  --token         "repoV2/bbd87e3a-4b76-4c72-ac6b-4cd6cb0c27a1/4a68fb1d-c0ed-4f98-bfc9-9e0c0a615dbf" `
-  --organization  $org `
-  --output        json
-
-# Convert JSON to an object
-$permObj = $permissionsShow | ConvertFrom-Json
-
-# Define the four you care about
-$targetPerms = @(
-  "Advanced Security: manage and dismiss alerts",
-  "Advanced Security: manage settings",
-  "Advanced Security: view alerts",
-  "Read"
-)
-
-# Filter the resolvedPermissions array
-$filtered = $permObj.resolvedPermissions `
-  | Where-Object { $targetPerms -contains $_.displayName }
-
-# Print a clean table
-$filtered | Format-Table displayName, effectivePermission
-
-
-
-
 # Define the permissions you want to filter for
 $targetPermissions = @(
     "Advanced Security: manage and dismiss alerts",
@@ -35,18 +6,27 @@ $targetPermissions = @(
     "Read"
 )
 
-# Get the permissions data
-$permissionsShow = az devops security permission show `
+# Get the full ACL JSON (make sure we ask for JSON!)
+$permissionsJson = az devops security permission show-namespace-id `
     --namespace-id "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
-    --subject $groupDescriptor `
-    --token "repoV2/bbd87e3a-4b76-4c72-ac6b-4cd6cb0c27a1/4a68fb1d-c0ed-4f98-bfc9-9e0c0a615dbf" |
-    ConvertFrom-Json
+    --subject       $groupDescriptor `
+    --token         "repoV2/bbd87e3a-4b76-4c72-ac6b-4cd6cb0c27a1/4a68fb1d-c0ed-4f98-bfc9-9e0c0a615dbf" `
+    --organization  $org `
+    --output        json
 
-# Filter and display only the target permissions
-$filteredPermissions = $permissionsShow.resolvedPermissions | 
+# Parse it into PowerShell objects
+$permissionsShow = $permissionsJson | ConvertFrom-Json
+
+# Grab the inner resolvedPermissions array
+# (there’s typically exactly one object at the root, with a .resolvedPermissions child)
+$resolved = $permissionsShow |
+    ForEach-Object { $_.resolvedPermissions }
+
+# Now filter only the four you care about
+$filteredPermissions = $resolved |
     Where-Object { $targetPermissions -contains $_.displayName } |
     Select-Object displayName, effectivePermission
 
-# Display the results
+# Display the results (will show something now!)
 Write-Host "`nFiltered Permissions:"
 $filteredPermissions | Format-Table -AutoSize
