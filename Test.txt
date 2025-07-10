@@ -3,11 +3,11 @@
 # ------------------------
 
 $org = "https://dev.azure.com/cantirebank/"
-$namespaceId = "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87"  # Azure Repos Git
-$projectId = $ProjectDetails.id  # Get via `az devops project show`
-$repoId = $repold                # Get via `az repos show`
-$token = "repoV2/$projectId/$repoId"  # Target resource
-$subject = $groupDescriptor     # AAD or ADO group descriptor (vssgp.xxx)
+$namespaceId = "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87"
+$projectId = $ProjectDetails.id
+$repoId = $repold
+$token = "repoV2/$projectId/$repoId"
+$subject = $groupDescriptor  # e.g., vssgp.xxx
 
 # Permissions to audit
 $permissionsToCheck = @(
@@ -17,17 +17,11 @@ $permissionsToCheck = @(
     "Read"
 )
 
-# Known inherited mappings (manual fallback)
-$inheritanceMap = @{
-    "Advanced Security: view alerts" = "Repository Security Readers"
-    "Read" = "Repository Security Readers"
-}
-
 # ------------------------
-# FETCH PERMISSIONS
+# STEP 1: Get direct permissions of the subject
 # ------------------------
 
-Write-Host "🔍 Fetching permissions for subject: $subject"
+Write-Host "🔍 Fetching direct permissions for subject: $subject"
 $jsonText = az devops security permission show `
     --namespace-id  $namespaceId `
     --subject       $subject `
@@ -35,43 +29,70 @@ $jsonText = az devops security permission show `
     --organization  $org `
     --output        json
 
-if (!$jsonText) {
-    Write-Error "❌ No permission data returned. Check subject or token values."
-    exit 1
+$directPermissions = $jsonText | ConvertFrom-Json
+
+# ------------------------
+# STEP 2: Get group memberships of the subject
+# ------------------------
+
+Write-Host "🔗 Fetching group memberships for subject: $subject"
+$membershipJson = az devops security group membership list `
+    --id $subject `
+    --organization $org `
+    --output json
+
+$groupMemberships = ($membershipJson | ConvertFrom-Json).members
+
+# ------------------------
+# STEP 3: Fetch permissions of each parent group
+# ------------------------
+
+$inheritedPermissions = @{}
+
+foreach ($group in $groupMemberships) {
+    Write-Host "🔄 Checking inherited permissions for group: $group"
+
+    $permJson = az devops security permission show `
+        --namespace-id $namespaceId `
+        --subject $group `
+        --token $token `
+        --organization $org `
+        --output json
+
+    $permList = $permJson | ConvertFrom-Json
+
+    foreach ($perm in $permList) {
+        if ($perm.allow -gt 0) {
+            if (-not $inheritedPermissions.ContainsKey($perm.permissionDisplayName)) {
+                $inheritedPermissions[$perm.permissionDisplayName] = $group
+            }
+        }
+    }
 }
 
-$allPermissions = $jsonText | ConvertFrom-Json
-
 # ------------------------
-# DEBUG: Print all returned permissions
-# ------------------------
-
-Write-Host "`n📋 All permissions returned by Azure CLI:"
-$allPermissions | Format-Table permissionDisplayName, allow, deny
-
-# ------------------------
-# AUDIT EACH TARGET PERMISSION
+# STEP 4: Final audit (direct + inherited)
 # ------------------------
 
 foreach ($permName in $permissionsToCheck) {
     Write-Host "`n🔎 Auditing permission: $permName"
 
-    $match = $allPermissions | Where-Object { $_.permissionDisplayName -eq $permName }
+    $match = $directPermissions | Where-Object { $_.permissionDisplayName -eq $permName }
 
     if ($match) {
         if ($match.allow -gt 0) {
-            Write-Host "  ✅ [$permName] is EXPLICITLY ALLOWED (Allow = $($match.allow))"
+            Write-Host "  ✅ [$permName] is EXPLICITLY ALLOWED"
         } elseif ($match.deny -gt 0) {
-            Write-Host "  🚫 [$permName] is EXPLICITLY DENIED (Deny = $($match.deny))"
+            Write-Host "  🚫 [$permName] is EXPLICITLY DENIED"
         } else {
-            Write-Host "  ⚠️ [$permName] exists but not explicitly allowed or denied"
+            Write-Host "  ⚠️ [$permName] exists but not allowed or denied"
         }
     }
-    elseif ($inheritanceMap.ContainsKey($permName)) {
-        $viaGroup = $inheritanceMap[$permName]
-        Write-Host "  📥 [$permName] is INHERITED via [$viaGroup]"
+    elseif ($inheritedPermissions.ContainsKey($permName)) {
+        $viaGroup = $inheritedPermissions[$permName]
+        Write-Host "  📥 [$permName] is INHERITED via group [$viaGroup]"
     }
     else {
-        Write-Host "  ❌ [$permName] is NOT SET and not known to be inherited"
+        Write-Host "  ❌ [$permName] is NOT SET and NOT INHERITED"
     }
 }
