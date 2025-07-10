@@ -1,47 +1,25 @@
-# Step 3: Audit each permission
-foreach ($permName in $permissionsToCheck) {
-    Write-Host "`n🔎 Auditing permission: $permName"
-    $foundMatch = $false
-    
-    # Find all relevant ACL entries
-    $relevantEntries = $allTokenPermissions | Where-Object {
-        $_.permissionDisplayName -and 
-        ($_.permissionDisplayName.Trim() -eq $permName.Trim()) -and
-        ($allSubjectsToCheck -contains $_.subjectDescriptor)
-    }
+# Your existing call (make sure you include --output json)
+$permissionsShow = az devops security permission show-namespace-id `
+  --namespace-id  "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
+  --subject       $groupDescriptor `
+  --token         "repoV2/bbd87e3a-4b76-4c72-ac6b-4cd6cb0c27a1/4a68fb1d-c0ed-4f98-bfc9-9e0c0a615dbf" `
+  --organization  $org `
+  --output        json
 
-    if ($relevantEntries) {
-        foreach ($entry in $relevantEntries) {
-            $foundMatch = $true
-            $source = if ($entry.subjectDescriptor -eq $subject) {
-                "EXPLICIT"
-            } else {
-                "INHERITED [$($entry.subjectDescriptor)]"
-            }
+# Convert JSON to an object
+$permObj = $permissionsShow | ConvertFrom-Json
 
-            if ($entry.allow -gt 0) {
-                Write-Host " ✅ ALLOWED ($source)"
-            } 
-            elseif ($entry.deny -gt 0) {
-                Write-Host " 🚫 DENIED ($source)"
-            }
-            else {
-                Write-Host " ⚠️ NEUTRAL ($source) - Neither allowed nor denied"
-            }
-        }
-    }
-    
-    if (-not $foundMatch) {
-        # Check if permission exists for other subjects
-        $permissionExists = $allTokenPermissions | Where-Object {
-            $_.permissionDisplayName -and 
-            ($_.permissionDisplayName.Trim() -eq $permName.Trim())
-        }
-        
-        if ($permissionExists) {
-            Write-Host " ❌ NOT SET for subject/groups (but exists for others)"
-        } else {
-            Write-Host " ❌ NOT SET in any ACL entries"
-        }
-    }
-}
+# Define the four you care about
+$targetPerms = @(
+  "Advanced Security: manage and dismiss alerts",
+  "Advanced Security: manage settings",
+  "Advanced Security: view alerts",
+  "Read"
+)
+
+# Filter the resolvedPermissions array
+$filtered = $permObj.resolvedPermissions `
+  | Where-Object { $targetPerms -contains $_.displayName }
+
+# Print a clean table
+$filtered | Format-Table displayName, effectivePermission
