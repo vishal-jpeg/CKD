@@ -23,3 +23,30 @@ $filtered = $permObj.resolvedPermissions `
 
 # Print a clean table
 $filtered | Format-Table displayName, effectivePermission
+
+
+
+
+# Define the permissions you want to filter for
+$targetPermissions = @(
+    "Advanced Security: manage and dismiss alerts",
+    "Advanced Security: manage settings",
+    "Advanced Security: view alerts",
+    "Read"
+)
+
+# Get the permissions data
+$permissionsShow = az devops security permission show `
+    --namespace-id "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
+    --subject $groupDescriptor `
+    --token "repoV2/bbd87e3a-4b76-4c72-ac6b-4cd6cb0c27a1/4a68fb1d-c0ed-4f98-bfc9-9e0c0a615dbf" |
+    ConvertFrom-Json
+
+# Filter and display only the target permissions
+$filteredPermissions = $permissionsShow.resolvedPermissions | 
+    Where-Object { $targetPermissions -contains $_.displayName } |
+    Select-Object displayName, effectivePermission
+
+# Display the results
+Write-Host "`nFiltered Permissions:"
+$filteredPermissions | Format-Table -AutoSize
