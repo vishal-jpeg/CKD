@@ -1,28 +1,19 @@
-# Known inheritance mapping
-$inheritanceMap = @{
-    "Advanced Security: view alerts" = "Repository Security Readers"
-    "Read" = "Repository Security Readers"
-}
+🔍 Fetching permissions for subject: vssgp.abc...
 
-foreach ($permName in $permissionsToCheck) {
-    Write-Host "`n🔎 Checking permission: $permName"
+📋 All permissions returned by Azure CLI:
+permissionDisplayName                   allow deny
+----------------------                  ----- ----
+Advanced Security: manage settings       1     0
+Advanced Security: view alerts           0     0
 
-    $match = $allPermissions | Where-Object { $_.permissionDisplayName -eq $permName }
+🔎 Auditing permission: Advanced Security: manage and dismiss alerts
+  ❌ [Advanced Security: manage and dismiss alerts] is NOT SET and not known to be inherited
 
-    if ($match) {
-        if ($match.allow -gt 0) {
-            Write-Host "  ✅ [$permName] is ALLOWED (Allow = $($match.allow))"
-        } elseif ($match.deny -gt 0) {
-            Write-Host "  🚫 [$permName] is DENIED (Deny = $($match.deny))"
-        } else {
-            Write-Host "  ⚠️ [$permName] exists but not allowed or denied"
-        }
-    }
-    elseif ($inheritanceMap.ContainsKey($permName)) {
-        $inheritedGroup = $inheritanceMap[$permName]
-        Write-Host "  📥 [$permName] is INHERITED via [$inheritedGroup]"
-    }
-    else {
-        Write-Host "  ❌ [$permName] is NOT SET"
-    }
-}
+🔎 Auditing permission: Advanced Security: manage settings
+  ✅ [Advanced Security: manage settings] is EXPLICITLY ALLOWED (Allow = 1)
+
+🔎 Auditing permission: Advanced Security: view alerts
+  📥 [Advanced Security: view alerts] is INHERITED via [Repository Security Readers]
+
+🔎 Auditing permission: Read
+  📥 [Read] is INHERITED via [Repository Security Readers]
