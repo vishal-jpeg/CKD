@@ -1,1 +1,50 @@
 
+# Define your inputs
+$org = "https://dev.azure.com/cantirebank/"
+$namespaceId = "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87"  # Azure Repos Git namespace
+$projectId = $ProjectDetails.id  # From earlier: az devops project show ...
+$repoId = $repold                # From earlier: az repos show ...
+$token = "repoV2/$projectId/$repoId"  # Resource token format
+$subject = $groupDescriptor     # Group descriptor from az devops security group list ...
+
+# Define permissions to audit
+$permissionsToCheck = @(
+    "Advanced Security: manage and dismiss alerts",
+    "Advanced Security: manage settings",
+    "Advanced Security: view alerts",
+    "Read"
+)
+
+# Fetch all permissions for the group+resource combo
+Write-Host "🔍 Fetching permission data from ADO for: $subject"
+$jsonText = az devops security permission show `
+    --namespace-id  $namespaceId `
+    --subject       $subject `
+    --token         $token `
+    --organization  $org `
+    --output        json
+
+if (!$jsonText) {
+    Write-Error "❌ No permission data returned. Check subject or token values."
+    exit 1
+}
+
+# Parse returned JSON
+$allPermissions = $jsonText | ConvertFrom-Json
+
+# Loop and check each permission
+foreach ($permName in $permissionsToCheck) {
+    Write-Host "`n🔎 Checking permission: $permName"
+
+    $match = $allPermissions | Where-Object { $_.permissionDisplayName -eq $permName }
+
+    if (!$match) {
+        Write-Host "  ⚠️  [$permName] is NOT SET"
+    } elseif ($match.allow -gt 0) {
+        Write-Host "  ✅ [$permName] is ALLOWED (Allow = $($match.allow))"
+    } elseif ($match.deny -gt 0) {
+        Write-Host "  🚫 [$permName] is DENIED (Deny = $($match.deny))"
+    } else {
+        Write-Host "  ⚠️  [$permName] exists but not explicitly allowed or denied"
+    }
+}
