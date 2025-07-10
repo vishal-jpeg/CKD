@@ -1,91 +1,155 @@
-The issue arises because the group membership retrieval doesn't extract the `descriptor` values properly, and there might be case sensitivity or whitespace mismatches in permission names. Here's the corrected script:
+Here's the complete fixed script with detailed explanations:
 
 ```powershell
-# ... [previous setup code remains the same] ...
+# Azure DevOps Setup
+$org = "https://dev.azure.com/cantirebank/"
+$namespaceId = "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87"
+$projectId = $ProjectDetails.id
+$repoId = $repold
+$token = "repoV2/$projectId/$repoId"
+$subject = $groupDescriptor
 
-# Step 1: Get ACL entries
+# Permissions to audit
+$permissionsToCheck = @(
+    "Advanced Security: manage and dismiss alerts",
+    "Advanced Security: manage settings",
+    "Advanced Security: view alerts",
+    "Read"
+)
+
+# Step 1: Get all ACL entries for the repository
 Write-Host "🔍 Fetching all permission entries set on token: $token"
-$rawJson = az devops security permission list --namespace-id $namespaceId --token $token --recurse --organization $org --output json
+$rawJson = az devops security permission list `
+    --namespace-id $namespaceId `
+    --token $token `
+    --recurse `
+    --organization $org `
+    --output json 2>$null
+
+if (-not $rawJson) {
+    Write-Host "❌ Failed to retrieve permission entries. Check your parameters and permissions."
+    exit 1
+}
+
 $allTokenPermissions = $rawJson | ConvertFrom-Json
 
-# Step 2: Fix group membership handling - extract descriptors
-Write-Host "`n🔄 Resolving group memberships for subject..."
-$subjectMembershipsJson = az devops security group membership list --id $subject --organization $org --output json
-$subjectMemberships = $subjectMembershipsJson | ConvertFrom-Json
+# Step 2: Resolve group memberships for the subject
+Write-Host "`n🔄 Resolving group memberships for subject: $subject"
+$subjectMembershipsJson = az devops security group membership list `
+    --id $subject `
+    --organization $org `
+    --output json 2>$null
 
-# Extract descriptor properties from group objects
+if (-not $subjectMembershipsJson) {
+    Write-Host "❌ Failed to retrieve group memberships. Check subject descriptor."
+    exit 1
+}
+
+$subjectMemberships = $subjectMembershipsJson | ConvertFrom-Json
 $subjectGroupsDescriptors = $subjectMemberships.members.descriptor
 $allSubjectsToCheck = @($subject) + $subjectGroupsDescriptors
 
-Write-Host "   Subject and group descriptors to check:"
-$allSubjectsToCheck | ForEach-Object { Write-Host "      $_" }
+Write-Host "   Subjects to check:"
+$allSubjectsToCheck | ForEach-Object { Write-Host "      - $_" }
 
-# Step 3: Normalize permission names and check matches
+# Step 3: Audit each permission
 foreach ($permName in $permissionsToCheck) {
     Write-Host "`n🔎 Auditing permission: $permName"
+    $foundMatch = $false
     
-    # Find matching ACL entries (case-insensitive and trimmed)
-    $matchingEntries = $allTokenPermissions | Where-Object {
+    # Find all relevant ACL entries
+    $relevantEntries = $allTokenPermissions | Where-Object {
         $_.permissionDisplayName -and 
-        ($_.permissionDisplayName.Trim() -eq $permName.Trim())
-    }
-
-    # Filter to entries applying to our subject/groups
-    $relevantEntries = $matchingEntries | Where-Object {
-        $allSubjectsToCheck -contains $_.subjectDescriptor
+        ($_.permissionDisplayName.Trim() -eq $permName.Trim()) -and
+        ($allSubjectsToCheck -contains $_.subjectDescriptor)
     }
 
     if ($relevantEntries) {
         foreach ($entry in $relevantEntries) {
+            $foundMatch = $true
+            $source = if ($entry.subjectDescriptor -eq $subject) {
+                "EXPLICIT"
+            } else {
+                "INHERITED [$($entry.subjectDescriptor)]"
+            }
+
             if ($entry.allow -gt 0) {
-                if ($entry.subjectDescriptor -eq $subject) {
-                    Write-Host " ✅ [$permName] is EXPLICITLY ALLOWED"
-                } else {
-                    Write-Host " 📥 [$permName] is INHERITED via group [$($entry.subjectDescriptor)]"
-                }
+                Write-Host " ✅ ALLOWED ($source)"
             } 
             elseif ($entry.deny -gt 0) {
-                Write-Host " 🚫 [$permName] is DENIED"
-            } 
+                Write-Host " 🚫 DENIED ($source)"
+            }
             else {
-                Write-Host " ⚠️ [$permName] exists but not allowed or denied"
+                Write-Host " ⚠️ NEUTRAL ($source) - Neither allowed nor denied"
             }
         }
     }
-    else {
-        # Debug: Check if permission exists elsewhere
-        $existsOnOtherSubjects = $matchingEntries.Count -gt 0
-        if ($existsOnOtherSubjects) {
-            Write-Host " ❌ [$permName] is SET but NOT APPLIED to subject/groups"
+    
+    if (-not $foundMatch) {
+        # Check if permission exists for other subjects
+        $permissionExists = $allTokenPermissions | Where-Object {
+            $_.permissionDisplayName -and 
+            ($_.permissionDisplayName.Trim() -eq $permName.Trim())
+        }
+        
+        if ($permissionExists) {
+            Write-Host " ❌ NOT SET for subject/groups (but exists for others)"
         } else {
-            Write-Host " ❌ [$permName] is NOT SET and NOT INHERITED"
+            Write-Host " ❌ NOT SET in any ACL entries"
         }
     }
 }
 ```
 
-### Key Fixes:
-1. **Group Descriptor Extraction**: 
-   - Correctly extracts `descriptor` properties from group membership objects using `.members.descriptor`
-   
-2. **Permission Name Matching**:
-   - Uses case-sensitive matching but trims whitespace to avoid mismatches
-   - Checks for null permission names before comparison
+### Key Improvements:
 
-3. **Debug Output**:
+1. **Group Descriptor Handling**:
+   - Correctly extracts group descriptors using `$subjectMemberships.members.descriptor`
+   - Shows all subjects being checked for transparency
+
+2. **Robust Permission Matching**:
+   - Uses `.Trim()` for permission names to handle whitespace variations
+   - Handles null/empty permission names safely
+   - Case-sensitive matching (matches Azure DevOps portal behavior)
+
+3. **Comprehensive Result Reporting**:
+   - Reports ALL matching entries (explicit + inherited)
+   - Clearly differentiates between:
+     - Explicit vs inherited permissions
+     - Allow/Deny/Neutral states
+     - Permissions missing entirely vs not set for subject
+
+4. **Error Handling**:
+   - Checks for failed Azure CLI commands
+   - Provides clear error messages
+   - Exits gracefully on critical failures
+
+5. **Diagnostic Output**:
    - Lists all subject descriptors being checked
-   - Differentiates between "permission not set" vs "set but not applied to subject"
+   - Shows when permissions exist but not for subject's groups
+   - Identifies completely unset permissions
 
-4. **Handling Multiple Entries**:
-   - Processes all matching entries instead of just the first match
-   - Checks both explicit and inherited permissions
+### Usage Notes:
+1. This script requires:
+   - Azure CLI installed
+   - `az devops` extension installed
+   - Proper authentication setup (`az login`)
+   - Valid permissions to query Azure DevOps security
 
-### Verification Steps:
-1. Check if permission names match exactly (including spaces/capitalization) by:
-   ```powershell
-   $allTokenPermissions.permissionDisplayName | Select-Object -Unique
-   ```
-2. Validate group descriptors in the chain match those in ACL entries
-3. Ensure the token format (`repoV2/$projectId/$repoId`) matches your Azure DevOps setup
+2. The script handles:
+   - Group inheritance chains
+   - Explicit vs inherited permissions
+   - Multiple permission assignments
+   - Various permission states (Allow/Deny/Not Set)
 
-This should now correctly identify inherited permissions and handle naming variations. If permissions still don't match, verify the exact permission names from the `$allTokenPermissions` output and adjust `$permissionsToCheck` accordingly.
+3. If you still see "NOT SET" for permissions that should be inherited:
+   - Verify permission names match exactly what Azure DevOps uses
+   - Check group membership inheritance chain
+   - Ensure the token format is correct for your repository
+
+To get exact permission names used in your organization, run:
+```powershell
+$allTokenPermissions.permissionDisplayName | Select-Object -Unique
+```
+
+This comprehensive solution should correctly identify all explicit and inherited permissions for the specified subject.
