@@ -1,98 +1,64 @@
-# ------------------------
-# CONFIGURATION SECTION
-# ------------------------
-
+# Setup
 $org = "https://dev.azure.com/cantirebank/"
 $namespaceId = "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87"
 $projectId = $ProjectDetails.id
 $repoId = $repold
 $token = "repoV2/$projectId/$repoId"
-$subject = $groupDescriptor  # e.g., vssgp.xxx
+$subject = $groupDescriptor
 
-# Permissions to audit
 $permissionsToCheck = @(
-    "Advanced Security: manage and dismiss alerts",
-    "Advanced Security: manage settings",
-    "Advanced Security: view alerts",
-    "Read"
+  "Advanced Security: manage and dismiss alerts",
+  "Advanced Security: manage settings",
+  "Advanced Security: view alerts",
+  "Read"
 )
 
-# ------------------------
-# STEP 1: Get direct permissions of the subject
-# ------------------------
+# Step 1: Get all ACL entries set on this token (repo), including inherited
+Write-Host "🔍 Fetching all permission entries set on token: $token"
 
-Write-Host "🔍 Fetching direct permissions for subject: $subject"
-$jsonText = az devops security permission show `
-    --namespace-id  $namespaceId `
-    --subject       $subject `
-    --token         $token `
-    --organization  $org `
-    --output        json
+$rawJson = az devops security permission list `
+  --namespace-id $namespaceId `
+  --token $token `
+  --recurse `
+  --organization $org `
+  --output json
 
-$directPermissions = $jsonText | ConvertFrom-Json
+$allTokenPermissions = $rawJson | ConvertFrom-Json
 
-# ------------------------
-# STEP 2: Get group memberships of the subject
-# ------------------------
+# Step 2: Filter those entries to only those applying to our subject (or its parent groups)
 
-Write-Host "🔗 Fetching group memberships for subject: $subject"
-$membershipJson = az devops security group membership list `
-    --id $subject `
-    --organization $org `
-    --output json
+# Fetch all groups this subject is a member of
+Write-Host "`n🔄 Resolving group memberships for subject..."
+$subjectMembershipsJson = az devops security group membership list `
+  --id $subject `
+  --organization $org `
+  --output json
 
-$groupMemberships = ($membershipJson | ConvertFrom-Json).members
+$subjectGroups = ($subjectMembershipsJson | ConvertFrom-Json).members
+$allSubjectsToCheck = @($subject) + $subjectGroups  # Direct + parent groups
 
-# ------------------------
-# STEP 3: Fetch permissions of each parent group
-# ------------------------
-
-$inheritedPermissions = @{}
-
-foreach ($group in $groupMemberships) {
-    Write-Host "🔄 Checking inherited permissions for group: $group"
-
-    $permJson = az devops security permission show `
-        --namespace-id $namespaceId `
-        --subject $group `
-        --token $token `
-        --organization $org `
-        --output json
-
-    $permList = $permJson | ConvertFrom-Json
-
-    foreach ($perm in $permList) {
-        if ($perm.allow -gt 0) {
-            if (-not $inheritedPermissions.ContainsKey($perm.permissionDisplayName)) {
-                $inheritedPermissions[$perm.permissionDisplayName] = $group
-            }
-        }
-    }
-}
-
-# ------------------------
-# STEP 4: Final audit (direct + inherited)
-# ------------------------
-
+# Step 3: Filter permissions matching our subject or inherited groups
 foreach ($permName in $permissionsToCheck) {
-    Write-Host "`n🔎 Auditing permission: $permName"
+  Write-Host "`n🔎 Auditing permission: $permName"
 
-    $match = $directPermissions | Where-Object { $_.permissionDisplayName -eq $permName }
+  $entry = $allTokenPermissions | Where-Object {
+    ($allSubjectsToCheck -contains $_.subjectDescriptor) -and
+    ($_.permissionDisplayName -eq $permName)
+  }
 
-    if ($match) {
-        if ($match.allow -gt 0) {
-            Write-Host "  ✅ [$permName] is EXPLICITLY ALLOWED"
-        } elseif ($match.deny -gt 0) {
-            Write-Host "  🚫 [$permName] is EXPLICITLY DENIED"
-        } else {
-            Write-Host "  ⚠️ [$permName] exists but not allowed or denied"
-        }
+  if ($entry) {
+    if ($entry.allow -gt 0) {
+      if ($entry.subjectDescriptor -eq $subject) {
+        Write-Host "  ✅ [$permName] is EXPLICITLY ALLOWED"
+      } else {
+        Write-Host "  📥 [$permName] is INHERITED via group [$($entry.subjectDescriptor)]"
+      }
+    } elseif ($entry.deny -gt 0) {
+      Write-Host "  🚫 [$permName] is DENIED"
+    } else {
+      Write-Host "  ⚠️ [$permName] exists but not allowed or denied"
     }
-    elseif ($inheritedPermissions.ContainsKey($permName)) {
-        $viaGroup = $inheritedPermissions[$permName]
-        Write-Host "  📥 [$permName] is INHERITED via group [$viaGroup]"
-    }
-    else {
-        Write-Host "  ❌ [$permName] is NOT SET and NOT INHERITED"
-    }
+  } else {
+    Write-Host "  ❌ [$permName] is NOT SET and NOT INHERITED"
+  }
 }
