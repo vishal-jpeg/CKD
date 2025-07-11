@@ -1,1 +1,42 @@
-GET https://dev.azure.com/{org}/{project}/_apis/advancedsecurity/repositories/{repositoryId}/settings?api-version=7.1-preview.1
+deepseak
+# Set your parameters
+$org = "cantirebank"
+$project = "ctb-prj-mb-infra-01"
+$repoName = "Your-Repository-Name"  # Replace with your actual repo name
+$pat = "YOUR_PAT"  # Replace with your Personal Access Token
+
+# Base64 encode PAT for authentication
+$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat"))
+$headers = @{
+    Authorization = "Basic $base64AuthInfo"
+}
+
+# Step 1: Get Repository ID
+$repoUrl = "https://dev.azure.com/$org/$project/_apis/git/repositories/$repoName?api-version=7.0"
+$repo = Invoke-RestMethod -Uri $repoUrl -Method Get -Headers $headers
+$repoId = $repo.id
+
+# Step 2: Check GHAS Status
+$ghasUrl = "https://dev.azure.com/$org/$project/_apis/advancedsecurity/repositories/$repoId/settings?api-version=7.1-preview.1"
+$ghasSettings = Invoke-RestMethod -Uri $ghasUrl -Method Get -Headers $headers
+
+# Output results
+Write-Host "GHAS Status for '$repoName':"
+$ghasSettings | Format-List
+
+gpt
+param (
+    [string]$organization = "your-org",
+    [string]$project = "your-project",
+    [string]$repositoryId = "your-repo-id",
+    [string]$pat = "your-pat"
+)
+
+$base64AuthInfo = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$pat"))
+$headers = @{ Authorization = "Basic $base64AuthInfo" }
+
+$url = "https://dev.azure.com/$organization/$project/_apis/security/permissionevaluation/evaluatepermissions?api-version=7.1-preview.1"
+
+$response = Invoke-RestMethod -Uri $url -Headers $headers -Method Get
+
+$response | ConvertTo-Json -Depth 10
