@@ -1,4 +1,4 @@
-# 1) Define the 4 permissions you care about
+# 1) Define the permissions you want to check
 $targetPerms = @(
   "Advanced Security: manage and dismiss alerts",
   "Advanced Security: manage settings",
@@ -6,24 +6,23 @@ $targetPerms = @(
   "Read"
 )
 
-# 2) Fetch the full ACL from Azure DevOps (with inherited + extendedInfo)
-$rawJson = az devops security permission show `
-  --namespace-id    "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
-  --subject         $groupDescriptor `
-  --token           "repoV2/$projectId/$repoId" `
-  --organization    $org `
-  --include-extended-info `
-  --inherit-permissions `
-  --output          json
+# 2) Fetch the permission JSON from Azure DevOps
+$permissionsJson = az devops security permission show `
+  --namespace-id "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
+  --subject $groupDescriptor `
+  --token "repoV2/$projectId/$repoId" `
+  --organization $org `
+  --output json
 
-# 3) Convert to PowerShell object
-$acl = $rawJson | ConvertFrom-Json
+# 3) Convert to object
+$permissions = $permissionsJson | ConvertFrom-Json
 
-# 4) Pull out just the resolvedPermissions entries
-$resolved = $acl.resolvedPermissions
-
-# 5) Filter down to your 4, then display in a neat table
-$resolved |
+# 4) Filter and display only the desired permissions
+$filteredPermissions = $permissions.resolvedPermissions |
   Where-Object { $targetPerms -contains $_.displayName } |
-  Select-Object displayName, effectivePermission |
-  Format-Table -AutoSize -Wrap
+  Select-Object @{Name='Permission';Expression={$_.displayName}}, 
+                @{Name='Effective';Expression={$_.effectivePermission}}
+
+# 5) Display clean table
+Write-Host "`n🎯 Filtered Permission Audit:"
+$filteredPermissions | Format-Table -AutoSize
