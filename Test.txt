@@ -1,17 +1,7 @@
-# 1. Define your JMESPath query in a variable (PowerShell will keep the `$` literal)
-$permQuery = @"
-[?displayName=='Advanced Security: manage and dismiss alerts' || 
-  displayName=='Advanced Security: manage settings'          || 
-  displayName=='Advanced Security: view alerts'             || 
-  displayName=='Read'] 
-| [].{Permission:displayName, Effective:effectivePermission}
-"@
-
-# 2. Call the CLI once, passing that query
 az devops security permission show `
-  --namespace-id  "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
-  --subject       $groupDescriptor `
-  --token         "repoV2/$projectId/$repoId" `
-  --organization  $org `
-  --query         "resolvedPermissions$permQuery" `
-  --output        table
+  --namespace-id "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
+  --subject $groupDescriptor `
+  --token "repoV2/$projectId/$repoId" `
+  --organization $org `
+  --query "resolvedPermissions[?displayName=='Advanced Security: manage and dismiss alerts' || displayName=='Advanced Security: manage settings' || displayName=='Advanced Security: view alerts' || displayName=='Read'].{Permission:displayName, Effective:effectivePermission}" `
+  --output table
