@@ -1,7 +1,29 @@
-az devops security permission show `
-  --namespace-id "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
-  --subject $groupDescriptor `
-  --token "repoV2/$projectId/$repoId" `
-  --organization $org `
-  --query "resolvedPermissions[?displayName=='Advanced Security: manage and dismiss alerts' || displayName=='Advanced Security: manage settings' || displayName=='Advanced Security: view alerts' || displayName=='Read'].{Permission:displayName, Effective:effectivePermission}" `
-  --output table
+# 1) Define the 4 permissions you care about
+$targetPerms = @(
+  "Advanced Security: manage and dismiss alerts",
+  "Advanced Security: manage settings",
+  "Advanced Security: view alerts",
+  "Read"
+)
+
+# 2) Fetch the full ACL from Azure DevOps (with inherited + extendedInfo)
+$rawJson = az devops security permission show `
+  --namespace-id    "2e9eb7ed-3c0a-47d4-87c1-0ffdd275fd87" `
+  --subject         $groupDescriptor `
+  --token           "repoV2/$projectId/$repoId" `
+  --organization    $org `
+  --include-extended-info `
+  --inherit-permissions `
+  --output          json
+
+# 3) Convert to PowerShell object
+$acl = $rawJson | ConvertFrom-Json
+
+# 4) Pull out just the resolvedPermissions entries
+$resolved = $acl.resolvedPermissions
+
+# 5) Filter down to your 4, then display in a neat table
+$resolved |
+  Where-Object { $targetPerms -contains $_.displayName } |
+  Select-Object displayName, effectivePermission |
+  Format-Table -AutoSize -Wrap
